@@ -27,3 +27,9 @@ Creating an infrastructure for building neural nets fully in C, with ease of use
 	4. fit(Network *net, int num_samples, int sample_length, int networkOutputSize, double xtrain[][], double ytrain[][], int epochs, double learning_rate);
 	5. double **predict(Network *net, int num_samples, int sample_length, double data[][]);
 	6. destroyNetwork(Network *net); // Object destroyer
+### To Do:
+	1. Convolution Layer
+ 	2. Pooling Layer
+  	3. Adam Optimizer
+   	4. Softmax/Crossentropy loss
+    	5. OpenCL support
