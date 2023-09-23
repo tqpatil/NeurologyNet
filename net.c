@@ -1,7 +1,4 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
-#include <math.h>
+#include "net.h"
 double mean_squared_error(double* expected, double* result, int array_length){
 	double error=0;
 	for (int i=0; i<array_length; i++){
@@ -16,20 +13,6 @@ void mean_squared_prime(double* expected, double* result, int array_length, doub
 	}
 	
 }
-double mean_squared_error(double* expected, double* result, int array_length);
-void mean_squared_prime(double* expected, double* result, int array_length, double *output);
-typedef double (*loss)(double*, double*, int);
-typedef void (*loss_prime)(double*, double*, int, double*);
-typedef struct Network Network; 
-typedef struct Layer Layer;
-static double* FC_backprop(Layer *layer, double *output_error, double learning_rate);
-static double* FC_forprop(Layer *layer, double *input_data);
-static double* activation_backprop(Layer *layer, double *output_error, double learning_rate);
-static double* activation_forprop(Layer *layer, double *input_data);
-typedef void (*activation)(double*, int, double*);
-typedef void (*activation_p)(double*, int, double*);
-typedef double* (*forward_prop)(Layer*, double*);
-typedef double* (*backward_prop)(Layer*, double*, double);
 void relu_activation(double *input, int input_size, double *result){
 	for(int i=0; i<input_size; i++){
 		if(input[i] > 0){
@@ -63,29 +46,6 @@ void tanh_p(double *input, int input_size, double *result){
 		result[i] = (1-(temp * temp));
 	}
 }
-typedef struct Network{
-	Layer *head;
-	Layer *tail;
-	loss loss_function;
-	loss_prime loss_function_prime;
-	int num_layers;
-} Network;
-typedef struct Layer{
-	double **weights;// must be deallocated
-	double *bias;//must be deallocated
-	double *input; // must be deallocated
-	double *output; // must be deallocated
-	int input_size;
-	int output_size;
-	int type;
-	activation Activation;
-	activation_p Ddx_activation;
-	forward_prop forward_prop;
-	backward_prop backward_prop;
-	Layer *next; 
-	Layer *prev; 
-	
-} Layer;
 
 Network* initNetwork(loss Loss, loss_prime Loss_prime){
 	Network *net = (Network *)malloc(sizeof(Network));
@@ -435,25 +395,7 @@ int main(){
 	free(out[3]);
 	free(out);
 	destroyNetwork(net);
-	/*
-	printf("these work\n");
-	for (int i=0; i < layer->input_size; i++){
-		free(layer->weights[i]);
-	}
-	printf("2\n");
-	free(layer->weights);
-	for (int i=0; i<layerthree->input_size; i++){
-		free(layerthree->weights[i]);
-	}
-	printf("4\n");
-	free(layerthree->weights);
-	free(layer->bias);
-	free(layerthree->bias);
-	free(layer);
-	free(layertwo);
-	free(layerthree);
-	free(net);
-	*/
+	
 
 	/*double *result;
 	double* resultone;
@@ -476,15 +418,6 @@ int main(){
 	for (int i=0; i<784; i++){
 		printf("%f\n", resultone[i]);
 	}
-	free(resultone);
-	free(layer->bias);
-	for (int i=0; i < layer->input_size; i++){
-		free(layer->weights[i]);
-	}
-	free(layer->input);
-	free(layer->output);
-	free(layer->weights);
-	free(layer);
 */
 }
 // in mnist, each grayscale pixel value has a max of 255
