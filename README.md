@@ -1,5 +1,5 @@
 # Neurology
-Creating an infrastructure for building neural nets fully in C, with ease of use and simplicity. 
+Creating an infrastructure for building neural nets fully in C.
 ## Layer types
 - Fully Connected (FC) Layer
 	Params: 
