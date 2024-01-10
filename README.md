@@ -1,4 +1,6 @@
 # Neurology
+![image](https://github.com/tqpatil/NeurologyNet/assets/34226808/55f60d17-4989-4929-b066-2075fced4b64)
+
 Creating an infrastructure for building neural nets fully in C.
 ## Layer types
 - Fully Connected (FC) Layer
