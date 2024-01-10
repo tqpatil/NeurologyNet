@@ -1,5 +1,5 @@
 # Neurology
-![image](https://github.com/tqpatil/NeurologyNet/assets/34226808/55f60d17-4989-4929-b066-2075fced4b64)
+<img width="380" alt="image" src="https://github.com/tqpatil/NeurologyNet/assets/34226808/79ffe2f7-d055-416e-ac4c-d2653456e8d4">
 
 Creating an infrastructure for building neural nets fully in C.
 ## Layer types
@@ -29,6 +29,7 @@ Creating an infrastructure for building neural nets fully in C.
 	4. fit(Network *net, int num_samples, int sample_length, int networkOutputSize, double xtrain[][], double ytrain[][], int epochs, double learning_rate);
 	5. double **predict(Network *net, int num_samples, int sample_length, double data[][]);
 	6. destroyNetwork(Network *net); // Object destroyer
+ 
 ### To Do:
 	1. Convolution Layer
  	2. Pooling Layer
