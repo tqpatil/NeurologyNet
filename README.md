@@ -36,3 +36,6 @@ Creating an infrastructure for building neural nets fully in C.
   	3. Adam Optimizer
    	4. Softmax/Crossentropy loss
     	5. OpenCL support
+
+![image](https://github.com/tqpatil/NeurologyNet/assets/34226808/f0eb27d6-c078-46a3-9c05-334c166c4df7)
+
