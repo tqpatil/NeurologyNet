@@ -47,7 +47,7 @@ void tanh_p(double *input, int input_size, double *result){
 	}
 }
 
-Network* initNetwork(loss Loss, loss_prime Loss_prime){
+Network* initNetwork(loss Loss, loss_prime Loss_prime){ // Initialize network as a linked list of layers
 	Network *net = (Network *)malloc(sizeof(Network));
 	if (net == NULL){
 		fprintf(stderr, "Failed to allocate network\n");
@@ -60,7 +60,7 @@ Network* initNetwork(loss Loss, loss_prime Loss_prime){
 	net->num_layers = 0;
 	return net;
 }
-void addLayer(Network *net, Layer* layer){
+void addLayer(Network *net, Layer* layer){ // Add layer to end of network
 	if (layer == NULL){
 		fprintf(stderr, "Cannot add NULL layer to network\n");
 		return; 
@@ -80,7 +80,7 @@ void addLayer(Network *net, Layer* layer){
 		net->num_layers += 1;
 	}
 }
-double** predict(Network *net, int num_samples, int sample_size, double input_data[num_samples][sample_size]){
+double** predict(Network *net, int num_samples, int sample_size, double input_data[num_samples][sample_size]){ // run forward pass
 	double **result = (double**)malloc(num_samples*sizeof(double *));
 	for (int i=0; i<num_samples; i++){
 		result[i] = (double*)malloc(net->tail->output_size*sizeof(double));
@@ -137,8 +137,8 @@ double** predict(Network *net, int num_samples, int sample_size, double input_da
 	return result;
 }
 
-void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, double x_train[num_samples][sample_size], double y_train[num_samples][sizeOfOutput], int epochs, double learning_rate){
-	int input_shape = net->head->input_size;
+void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, double x_train[num_samples][sample_size], double y_train[num_samples][sizeOfOutput], int epochs, double learning_rate){ // Train network through backpropagation for n epochs
+	int input_shape = net->head->input_size; 
 	double *t;
 	double error;
 	double *e=(double *)malloc(net->tail->output_size * sizeof(double)); 
@@ -186,7 +186,7 @@ void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, doubl
 	}
 	free(e);
 }
-Layer* initActivation(activation a, activation_p ap, int input_size){
+Layer* initActivation(activation a, activation_p ap, int input_size){ // Using generic type Layer, set fields for Activation layer
 	Layer *layer = (Layer *)malloc(sizeof(Layer));
 	if (layer==NULL){
 		fprintf(stderr, "Failed to allocate activation layer\n");
@@ -205,7 +205,7 @@ Layer* initActivation(activation a, activation_p ap, int input_size){
 	return layer;
 }
 
-Layer* initFC(int input_size, int output_size){
+Layer* initFC(int input_size, int output_size){ // For fully connected layer, initialize and randomize weights, set forprop and backprop
 	srand(time(NULL));
 	Layer* layer= (Layer *) malloc(sizeof(Layer));
 	if (layer == NULL){
@@ -257,7 +257,7 @@ Layer* initFC(int input_size, int output_size){
 	return layer;
 
 }
-static double* activation_forprop(Layer *layer, double *input_data){
+static double* activation_forprop(Layer *layer, double *input_data){ // forward pass for activation layer
 	double *result = (double *)malloc(layer->output_size * sizeof(double));
 	if (layer == NULL){
 		fprintf(stderr, "Failed to forward propagate layer\n");
@@ -272,7 +272,7 @@ static double* activation_forprop(Layer *layer, double *input_data){
 	layer->output = result;
 	return result;
 }
-static double* activation_backprop(Layer *layer, double *output_error, double learning_rate){
+static double* activation_backprop(Layer *layer, double *output_error, double learning_rate){ // backward pass for activation layer
 	double act[layer->output_size];
 	layer->Ddx_activation(layer->input, layer->input_size, act);
 	for (int i=0; i<layer->input_size; i++){
@@ -288,7 +288,7 @@ static double* activation_backprop(Layer *layer, double *output_error, double le
 	}
 	return temp;
 }
-static double* FC_forprop(Layer *layer, double *input_data){
+static double* FC_forprop(Layer *layer, double *input_data){ // forward prop for Dense layer 
 	double *result = (double *)malloc(layer->output_size * sizeof(double));
 	layer->input = input_data;
 	for (int col = 0; col < layer->output_size; col++) {
@@ -302,7 +302,7 @@ static double* FC_forprop(Layer *layer, double *input_data){
 	return result;
 
 }
-static double* FC_backprop(Layer *layer, double *output_error, double learning_rate){
+static double* FC_backprop(Layer *layer, double *output_error, double learning_rate){ // backprop for Dense layer
 	double input_error[layer->input_size];
 	for (int i = 0; i < layer->input_size; i++) {
         	input_error[i] = 0;
@@ -348,14 +348,26 @@ void destroyNetwork(Network *net){
 	}
 	free(net);
 }
+void enableVisualizer(Network *net, int flag){
+	if(flag == 1){
+		net->visualizer = 1;
+	}
+	else{
+		net->visualizer = 0; 
+	}
+}
 int main(){
 	Network *net = initNetwork(mean_squared_error, mean_squared_prime);
 	Layer *layer = initFC(2, 3);
 	Layer *layertwo = initActivation(tanh_activation, tanh_p, 3);
-	Layer *layerthree = initFC(3, 1);
+	Layer *inter = initFC(3,4);
+	Layer *interac = initActivation(tanh_activation, tanh_p,4);
+	Layer *layerthree = initFC(4, 1);
 	Layer *layerf = initActivation(tanh_activation, tanh_p, 1);
 	addLayer(net, layer);
 	addLayer(net, layertwo);
+	addLayer(net,inter);
+	addLayer(net,interac);
 	addLayer(net, layerthree);
 	addLayer(net, layerf);
 	/*
@@ -384,7 +396,7 @@ int main(){
 	expected[1][0] = 1.0;
 	expected[2][0] = 1.0;
 	expected[3][0] = 0.0;
-	fit(net,4,2,1,input, expected, 1000, 0.05);
+	fit(net,4,2,1,input, expected, 100000, 0.2);
 	double **out=predict(net, 4,2,input);
 	for(int i=0; i<4; i++){
 		printf("%f\n", out[i][0]);

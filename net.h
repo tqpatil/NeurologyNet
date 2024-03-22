@@ -23,10 +23,14 @@ typedef struct Network{
         Layer *tail;
         loss loss_function;
         loss_prime loss_function_prime;
+	int visualizer; 
         int num_layers;
 } Network;
+void enableVisualizer(Network* net, int flag);
 typedef struct Layer{
-        double **weights;// must be deallocated
+        // Maybe a bool isConvolutional and a corresponding pointer to a conv2d layer with attributes to clean up code
+	// Same thing for a flatten layer and pooling layer depending on complexity
+	double **weights;// must be deallocated
         double *bias;//must be deallocated
         double *input; // must be deallocated
         double *output; // must be deallocated
