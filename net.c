@@ -1,4 +1,7 @@
 #include "net.h"
+#define NUM_IMAGES 10000
+#define IMAGE_SIZE 784 // 28x28
+#define NUM_IMAGES_TRAIN 60000
 double mean_squared_error(double* expected, double* result, int array_length){
 	double error=0;
 	for (int i=0; i<array_length; i++){
@@ -136,7 +139,6 @@ double** predict(Network *net, int num_samples, int sample_size, double input_da
 	*/
 	return result;
 }
-
 void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, double x_train[num_samples][sample_size], double y_train[num_samples][sizeOfOutput], int epochs, double learning_rate){ // Train network through backpropagation for n epochs
 	int input_shape = net->head->input_size; 
 	double *t;
@@ -356,26 +358,145 @@ void enableVisualizer(Network *net, int flag){
 		net->visualizer = 0; 
 	}
 }
+void reshapeImages(uint8_t *flatData, double (*reshapedData)[NUM_IMAGES][28][28]) {
+    for (int i = 0; i < NUM_IMAGES; ++i) {
+        for (int row = 0; row < 28; ++row) {
+            for (int col = 0; col < 28; ++col) {
+                (*reshapedData)[i][row][col] = flatData[i * IMAGE_SIZE + row * 28 + col];
+            }
+        }
+    }
+}
+int reverseInt (int i) 
+{
+    unsigned char c1, c2, c3, c4;
+    c1 = i & 255;
+    c2 = (i >> 8) & 255;
+    c3 = (i >> 16) & 255;
+    c4 = (i >> 24) & 255;
+
+    return ((int)c1 << 24) + ((int)c2 << 16) + ((int)c3 << 8) + c4;
+}
 int main(){
+	FILE *file = fopen("MNIST/t10k-images-idx3-ubyte/t10k-images.idx3-ubyte", "rb");
+	if (!file) {
+		perror("Error opening file");
+		return 1;
+    }
+	double testImages[NUM_IMAGES][28][28];
+	int magic_number=0;
+	int number_of_images=0;
+	int n_rows=0;
+	int n_cols=0;
+	// fread(&magic_number, sizeof(uint32_t), 1, file);
+	fread((char*)&magic_number,sizeof(magic_number),1,file); 
+	magic_number= reverseInt(magic_number);
+	fread((char*)&number_of_images,sizeof(number_of_images),1,file);
+	number_of_images= reverseInt(number_of_images);
+	fread((char*)&n_rows,sizeof(n_rows),1,file);
+	n_rows= reverseInt(n_rows);
+	fread((char*)&n_cols,sizeof(n_cols),1,file);
+	n_cols= reverseInt(n_cols);
+	for(int i=0;i<number_of_images;++i){
+		for(int r=0;r<n_rows;++r){
+			for(int c=0;c<n_cols;++c){
+				unsigned char temp=0;
+				fread((char*) &temp,sizeof(temp),1,file);
+				testImages[i][r][c] = (double) temp;
+
+			}
+		}
+	}
+	fclose(file);
+	// return 0;
+	FILE *file2 = fopen("MNIST/train-images-idx3-ubyte/train-images.idx3-ubyte", "rb");
+	if (!file2) {
+		perror("Error opening file");
+		return 1;
+    }
+	double train_images[NUM_IMAGES_TRAIN][28][28];
+	int magic_number_train=0;
+	int number_of_images_train=0;
+	int n_rows_train=0;
+	int n_cols_train=0;
+	fread((char*)&magic_number_train,sizeof(magic_number_train),1,file2); 
+	magic_number_train= reverseInt(magic_number_train);
+	fread((char*)&number_of_images_train,sizeof(number_of_images_train),1,file2);
+	number_of_images_train= reverseInt(number_of_images_train);
+	// printf("%d\n",number_of_images_train);
+	fread((char*)&n_rows_train,sizeof(n_rows_train),1,file2);
+	n_rows_train= reverseInt(n_rows_train);
+	fread((char*)&n_cols_train,sizeof(n_cols_train),1,file2);
+	n_cols= reverseInt(n_cols_train);
+	for(int i=0;i<number_of_images;++i){
+		for(int r=0;r<n_rows;++r){
+			for(int c=0;c<n_cols;++c){
+				unsigned char temp=0;
+				fread((char*) &temp,sizeof(temp),1,file2);
+				train_images[i][r][c] = (double) temp;
+
+			}
+		}
+	}
+	fclose(file2);
+	FILE *file3 = fopen("MNIST/t10k-labels-idx1-ubyte/t10k-labels.idx1-ubyte", "rb");
+	if (!file3) {
+		perror("Error opening file");
+		return 1;
+    }
+	int magic_number_labels= 0;
+    fread((char *)&magic_number_labels, sizeof(magic_number_labels),1, file3);
+    magic_number_labels = reverseInt(magic_number_labels);
+	int number_of_labels=0;
+	fread((char *)&number_of_labels, sizeof(number_of_labels),1,file3);
+	number_of_labels = reverseInt(number_of_labels);
+	double test_labels[number_of_labels];
+	for(int i=0; i< number_of_labels;i++){
+		unsigned char temp = 0;
+		fread((char *) &temp, sizeof(temp), 1,file3);
+		test_labels[i]= (double) temp;
+	}
+	fclose(file3);
+	FILE *file4 = fopen("MNIST/train-labels-idx1-ubyte/train-labels.idx1-ubyte", "rb");
+	if (!file4) {
+		perror("Error opening file");
+		return 1;
+    }
+	int magic_number_labels_train= 0;
+    fread((char *)&magic_number_labels_train, sizeof(magic_number_labels_train),1, file4);
+    magic_number_labels_train = reverseInt(magic_number_labels_train);
+	int number_of_labels_train=0;
+	fread((char *)&number_of_labels_train, sizeof(number_of_labels_train),1,file4);
+	number_of_labels_train = reverseInt(number_of_labels_train);
+	double train_labels[number_of_labels_train];
+	for(int i=0; i< number_of_labels_train;i++){
+		unsigned char temp = 0;
+		fread((char *) &temp, sizeof(temp), 1,file4);
+		train_labels[i]= (double) temp;
+	}
+
 	Network *net = initNetwork(mean_squared_error, mean_squared_prime);
 	Layer *layer = initFC(2, 3);
-	Layer *layertwo = initActivation(tanh_activation, tanh_p, 3);
+	Layer *layertwo = initActivation(relu_activation, relu_p, 3);
 	Layer *inter = initFC(3,4);
-	Layer *interac = initActivation(tanh_activation, tanh_p,4);
+	Layer *interac = initActivation(relu_activation, relu_p,4);
 	Layer *layerthree = initFC(4, 1);
-	Layer *layerf = initActivation(tanh_activation, tanh_p, 1);
+	Layer *layerf = initActivation(relu_activation, relu_p, 1);
 	addLayer(net, layer);
 	addLayer(net, layertwo);
 	addLayer(net,inter);
 	addLayer(net,interac);
 	addLayer(net, layerthree);
 	addLayer(net, layerf);
+	//this one down below this is supposed to be commented
 	/*
 	double **input = (double**)malloc(4*sizeof(double*));
 	for (int i=0; i<4; i++){
 		input[i] = (double *)malloc(2* sizeof(double));
 	}
 	*/
+	//This one down here can be uncommented
+	/*
 	double input[4][2];
 	input[0][0] = 0.0;
 	input[0][1] = 0.0;
@@ -385,12 +506,16 @@ int main(){
 	input[2][1] = 0.0;
 	input[3][0] = 1.0;
 	input[3][1] = 1.0;
+	*/
+	// comment down is ok 
 	/*
 	double **expected = (double **) malloc(4*sizeof(double*));
 	for (int i=0; i<4; i++){
 		expected[i] = (double *) malloc(sizeof(double));
 	}
 	*/
+	//uncomment down
+	/*
 	double expected[4][1];
 	expected[0][0] = 0.0;
 	expected[1][0] = 1.0;
@@ -407,7 +532,8 @@ int main(){
 	free(out[3]);
 	free(out);
 	destroyNetwork(net);
-	
+	*/
+	//end code
 
 	/*double *result;
 	double* resultone;

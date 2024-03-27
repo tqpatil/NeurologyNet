@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <math.h>
+#include <stdint.h>
 double mean_squared_error(double* expected, double* result, int array_length);
 void mean_squared_prime(double* expected, double* result, int array_length, double *output);
 typedef double (*loss)(double*, double*, int);
@@ -41,6 +42,9 @@ typedef struct Layer{
         activation_p Ddx_activation;
         forward_prop forward_prop;
         backward_prop backward_prop;
+        int num_filters;
+        int filter_size;       
+        int filter;
         Layer *next; 
         Layer *prev; 
         
