@@ -43,8 +43,10 @@ typedef struct Layer{
         forward_prop forward_prop;
         backward_prop backward_prop;
         int num_filters;
-        int filter_size;       
-        int filter;
+        int filter_rows;
+        int filter_cols;       
+        double ***convFilters; // Need to deallocate
+        // double convFilters[num_filters][filter_rows][filter_cols]; // fill with random values 
         Layer *next; 
         Layer *prev; 
         

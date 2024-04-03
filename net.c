@@ -206,7 +206,72 @@ Layer* initActivation(activation a, activation_p ap, int input_size){ // Using g
 	//set layer forward prop and back prop functions
 	return layer;
 }
+// What about channels on an immage?
+// alternative is just to have the filters be 4d array but make the channels 1 for grayscale images
+// i think this is better 
+// figure out the exact logistics for this shit. 
+Layer* initConv2D(int num_filters, int filter_rows, int filter_cols){
+	srand(time(NULL));
+	Layer *layer = (Layer *)malloc(sizeof(Layer));
+	if (layer==NULL){
+		fprintf(stderr, "Failed to allocate activation layer\n");
+		return NULL;
+	}
+	// layer->forward_prop = Conv_forprop;
+	// layer->backward_prop = Conv_backprop;
 
+	layer->input = NULL;
+	layer->output = NULL;
+	layer->type = 2;
+	if(num_filters <= 0){
+		printf("Number of filters cannot be less than or equal to 0.");
+	
+	}
+	layer->num_filters = num_filters;
+	layer->filter_rows = filter_rows;
+	layer->filter_cols = filter_cols;
+	layer->convFilters = (double ***) malloc(sizeof(double**)*num_filters);
+	if(layer->convFilters == NULL){
+		fprintf(stderr, "Failed to allocate memory\n");
+		free(layer);
+		return NULL;
+	}
+	for(int i=0; i< num_filters; i++){
+		layer->convFilters[i] = (double**) malloc(sizeof(double*) * filter_rows);
+		if (layer->convFilters[i] == NULL) {
+			for (int j = 0; j < i; j++) {
+                free(layer->convFilters[j]);
+            }
+            free(layer->convFilters);
+            free(layer);
+            return NULL;
+		}
+		for(int k=0; k< filter_rows; k++){
+			layer->convFilters[i][k] = (double *) malloc(sizeof(double) * filter_cols);
+			if (layer->convFilters[i][k] == NULL) {
+				for (int j = 0; j<k; j++){
+					free(layer->convFilters[i][j]);
+				}
+				free(layer->convFilters[i]);
+				for (int j = 0; j < i; j++) {
+					for(int m =0; m<filter_rows; m++){
+						free(layer->convFilters[j][m]);
+					}
+					free(layer->convFilters[j]);
+            	}
+				free(layer->convFilters);
+				free(layer);
+				return NULL;
+			}
+			for(int p=0; p<filter_cols; p++){
+				double b = sqrt(6)/sqrt(input_size + output_size);
+				double a = -1* sqrt(6)/sqrt(input_size + output_size);
+			}
+		}
+	}
+	return layer;
+	// double random_double = ((double)rand() / RAND_MAX)*0.6- 0.3;
+}
 Layer* initFC(int input_size, int output_size){ // For fully connected layer, initialize and randomize weights, set forprop and backprop
 	srand(time(NULL));
 	Layer* layer= (Layer *) malloc(sizeof(Layer));
@@ -218,12 +283,12 @@ Layer* initFC(int input_size, int output_size){ // For fully connected layer, in
 	layer->output_size = output_size;
 	layer->bias = (double *) malloc(output_size * sizeof(double));
         if(layer->bias == NULL){
-                fprintf(stderr, "Memory allocation failed.\n");
-		free(layer);
-		return NULL;
+            fprintf(stderr, "Memory allocation failed.\n");
+			free(layer);
+			return NULL;
         }
 	for (int i=0; i<output_size; i++){
-        	double random_double = ((double)rand() / RAND_MAX)*0.6- 0.3;
+        double random_double = ((double)rand() / RAND_MAX)*0.6- 0.3;
 		layer->bias[i] = random_double;
 	}
 	layer->weights = (double **)malloc(input_size * sizeof(double *));
@@ -245,12 +310,12 @@ Layer* initFC(int input_size, int output_size){ // For fully connected layer, in
             		return NULL;
         	}
 		for (int j = 0; j < output_size; j++) {
-			double b = sqrt(6/(input_size + output_size));
-			double a = -1 * a;
+			double b = sqrt(6)/sqrt(input_size + output_size);
+			double a = -1* sqrt(6)/sqrt(input_size + output_size);
 			double random_double = a+(((double)rand() / RAND_MAX) * (b-a));
                        	layer->weights[i][j] = random_double;
         	}
-    	}
+    }
 	layer->forward_prop = FC_forprop;
 	layer->backward_prop = FC_backprop;
 	layer->input = NULL;
@@ -378,6 +443,7 @@ int reverseInt (int i)
     return ((int)c1 << 24) + ((int)c2 << 16) + ((int)c3 << 8) + c4;
 }
 int main(){
+	
 	FILE *file = fopen("MNIST/t10k-images-idx3-ubyte/t10k-images.idx3-ubyte", "rb");
 	if (!file) {
 		perror("Error opening file");
@@ -434,7 +500,6 @@ int main(){
 				unsigned char temp=0;
 				fread((char*) &temp,sizeof(temp),1,file2);
 				train_images[i][r][c] = (double) temp;
-
 			}
 		}
 	}
@@ -474,20 +539,18 @@ int main(){
 		fread((char *) &temp, sizeof(temp), 1,file4);
 		train_labels[i]= (double) temp;
 	}
-
+	fclose(file4);
 	Network *net = initNetwork(mean_squared_error, mean_squared_prime);
-	Layer *layer = initFC(2, 3);
-	Layer *layertwo = initActivation(relu_activation, relu_p, 3);
-	Layer *inter = initFC(3,4);
-	Layer *interac = initActivation(relu_activation, relu_p,4);
+	Layer *layer = initFC(2, 4);
+	Layer *layertwo = initActivation(tanh_activation, tanh_p, 3);
 	Layer *layerthree = initFC(4, 1);
-	Layer *layerf = initActivation(relu_activation, relu_p, 1);
+	Layer *layerf = initActivation(tanh_activation, tanh_p, 1);
 	addLayer(net, layer);
 	addLayer(net, layertwo);
-	addLayer(net,inter);
-	addLayer(net,interac);
 	addLayer(net, layerthree);
 	addLayer(net, layerf);
+	// addLayer(net, layerthree);
+	// addLayer(net, layerf);
 	//this one down below this is supposed to be commented
 	/*
 	double **input = (double**)malloc(4*sizeof(double*));
@@ -521,7 +584,7 @@ int main(){
 	expected[1][0] = 1.0;
 	expected[2][0] = 1.0;
 	expected[3][0] = 0.0;
-	fit(net,4,2,1,input, expected, 100000, 0.2);
+	fit(net,4,2,1,input, expected, 10000, 0.05);
 	double **out=predict(net, 4,2,input);
 	for(int i=0; i<4; i++){
 		printf("%f\n", out[i][0]);
@@ -531,8 +594,9 @@ int main(){
 	free(out[2]);
 	free(out[3]);
 	free(out);
-	destroyNetwork(net);
 	*/
+	destroyNetwork(net);
+	return 0;
 	//end code
 
 	/*double *result;
