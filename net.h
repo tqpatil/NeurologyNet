@@ -5,20 +5,20 @@
 #include <time.h>
 #include <math.h>
 #include <stdint.h>
-double mean_squared_error(double* expected, double* result, int array_length);
-void mean_squared_prime(double* expected, double* result, int array_length, double *output);
-typedef double (*loss)(double*, double*, int);
-typedef void (*loss_prime)(double*, double*, int, double*);
+float mean_squared_error(float* expected, float* result, int array_length);
+void mean_squared_prime(float* expected, float* result, int array_length, float *output);
+typedef float (*loss)(float*, float*, int);
+typedef void (*loss_prime)(float*, float*, int, float*);
 typedef struct Network Network; 
 typedef struct Layer Layer;
-static double* FC_backprop(Layer *layer, double *output_error, double learning_rate);
-static double* FC_forprop(Layer *layer, double *input_data);
-static double* activation_backprop(Layer *layer, double *output_error, double learning_rate);
-static double* activation_forprop(Layer *layer, double *input_data);
-typedef void (*activation)(double*, int, double*);
-typedef void (*activation_p)(double*, int, double*);
-typedef double* (*forward_prop)(Layer*, double*);
-typedef double* (*backward_prop)(Layer*, double*, double);
+static float* FC_backprop(Layer *layer, float *output_error, float learning_rate);
+static float* FC_forprop(Layer *layer, float *input_data);
+static float* activation_backprop(Layer *layer, float *output_error, float learning_rate);
+static float* activation_forprop(Layer *layer, float *input_data);
+typedef void (*activation)(float*, int, float*);
+typedef void (*activation_p)(float*, int, float*);
+typedef float* (*forward_prop)(Layer*, float*);
+typedef float* (*backward_prop)(Layer*, float*, float);
 typedef struct Network{
         Layer *head;
         Layer *tail;
@@ -31,10 +31,10 @@ void enableVisualizer(Network* net, int flag);
 typedef struct Layer{
         // Maybe a bool isConvolutional and a corresponding pointer to a conv2d layer with attributes to clean up code
 	// Same thing for a flatten layer and pooling layer depending on complexity
-	double **weights;// must be deallocated
-        double *bias;//must be deallocated
-        double *input; // must be deallocated
-        double *output; // must be deallocated
+	float **weights;// must be deallocated
+        float *bias;//must be deallocated
+        float *input; // must be deallocated
+        float *output; // must be deallocated
         int input_size;
         int output_size;
         int type;
@@ -44,9 +44,10 @@ typedef struct Layer{
         backward_prop backward_prop;
         int num_filters;
         int filter_rows;
-        int filter_cols;       
-        double ***convFilters; // Need to deallocate
-        // double convFilters[num_filters][filter_rows][filter_cols]; // fill with random values 
+        int filter_cols; 
+        int channels;      
+        float ****convFilters; // Need to deallocate
+        // float convFilters[num_filters][filter_rows][filter_cols]; // fill with random values 
         Layer *next; 
         Layer *prev; 
         
