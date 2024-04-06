@@ -2,21 +2,23 @@
 #define NUM_IMAGES 10000
 #define IMAGE_SIZE 784 // 28x28
 #define NUM_IMAGES_TRAIN 60000
-float mean_squared_error(float* expected, float* result, int array_length){
-	float error=0;
+//nvcc compiles files with C++ linkage. 
+// If you want to link and call functions from a C file, cudatest must be declared extern “C”.
+double mean_squared_error(double* expected, double* result, int array_length){
+	double error=0;
 	for (int i=0; i<array_length; i++){
 		error += ((expected[i] - result[i]) * (expected[i] - result[i]));
 	}
 	error = error/array_length;
 	return error;
 }
-void mean_squared_prime(float* expected, float* result, int array_length, float *output){
+void mean_squared_prime(double* expected, double* result, int array_length, double *output){
 	for (int i=0; i<array_length; i++){
 		output[i] = (2* (expected[i] - result[i]))/array_length;
 	}
 	
 }
-void relu_activation(float *input, int input_size, float *result){
+void relu_activation(double *input, int input_size, double *result){
 	for(int i=0; i<input_size; i++){
 		if(input[i] > 0){
 			result[i] = input[i];
@@ -26,7 +28,7 @@ void relu_activation(float *input, int input_size, float *result){
 		}
 	}
 }
-void relu_p(float *input, int input_size, float *result){
+void relu_p(double *input, int input_size, double *result){
 	for(int i=0; i<input_size; i++){
 		if(input[i]>0){
 			result[i] = 1;
@@ -36,14 +38,14 @@ void relu_p(float *input, int input_size, float *result){
 		}
 	}
 }
-void tanh_activation(float *input, int input_size, float *result){
+void tanh_activation(double *input, int input_size, double *result){
 	for (int i=0; i< input_size; i++){
-		float temp = tanh(input[i]);
+		double temp = tanh(input[i]);
 		result[i] = temp;
 	}
 }
-void tanh_p(float *input, int input_size, float *result){
-	float temp;
+void tanh_p(double *input, int input_size, double *result){
+	double temp;
 	for (int i=0; i< input_size; i++){
 		temp = tanh(input[i]);
 		result[i] = (1-(temp * temp));
@@ -83,14 +85,14 @@ void addLayer(Network *net, Layer* layer){ // Add layer to end of network
 		net->num_layers += 1;
 	}
 }
-float** predict(Network *net, int num_samples, int sample_size, float input_data[num_samples][sample_size]){ // run forward pass
-	float **result = (float**)malloc(num_samples*sizeof(float *));
+double** predict(Network *net, int num_samples, int sample_size, double input_data[num_samples][sample_size]){ // run forward pass
+	double **result = (double**)malloc(num_samples*sizeof(double *));
 	for (int i=0; i<num_samples; i++){
-		result[i] = (float*)malloc(net->tail->output_size*sizeof(float));
+		result[i] = (double*)malloc(net->tail->output_size*sizeof(double));
 	}
 	for(int i=0; i<num_samples; i++){
-		float *input = (float*) malloc(net->head->input_size * sizeof(float));
-        	float *output;
+		double *input = (double*) malloc(net->head->input_size * sizeof(double));
+        	double *output;
 		for (int j=0; j<net->head->input_size; j++){
 			input[j] = input_data[i][j];
 		}
@@ -139,16 +141,16 @@ float** predict(Network *net, int num_samples, int sample_size, float input_data
 	*/
 	return result;
 }
-void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, float x_train[num_samples][sample_size], float y_train[num_samples][sizeOfOutput], int epochs, float learning_rate){ // Train network through backpropagation for n epochs
+void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, double x_train[num_samples][sample_size], double y_train[num_samples][sizeOfOutput], int epochs, double learning_rate){ // Train network through backpropagation for n epochs
 	int input_shape = net->head->input_size; 
-	float *t;
-	float error;
-	float *e=(float *)malloc(net->tail->output_size * sizeof(float)); 
+	double *t;
+	double error;
+	double *e=(double *)malloc(net->tail->output_size * sizeof(double)); 
 	for (int i=0; i < epochs; i++){
 		error = 0;
 		for (int j=0; j<num_samples; j++){
-			float *input = (float*) malloc(input_shape * sizeof(float));
-        		float *output;
+			double *input = (double*) malloc(input_shape * sizeof(double));
+        		double *output;
 			for (int k=0; k<input_shape; k++){
 				input[k] = x_train[j][k];
 			}
@@ -211,7 +213,7 @@ Layer* initActivation(activation a, activation_p ap, int input_size){ // Using g
 // i think this is better 
 // figure out the exact logistics for this shit because allocating the filters as a pointer map probably
 // risks memory fragmentation. Maybe want to just keep the 4d array as a 1d list and use index arithmetic. 
-Layer* initConv2D(int num_filters, int filter_rows, int filter_cols, int num_channels, int stride){
+Layer* initConv2D(int num_filters, int filter_rows, int filter_cols, int num_channels, int stride, int padding){
 	srand(time(NULL));
 	Layer *layer = (Layer *)malloc(sizeof(Layer));
 	if (layer==NULL){
@@ -223,24 +225,26 @@ Layer* initConv2D(int num_filters, int filter_rows, int filter_cols, int num_cha
 		free(layer);
 		return NULL;
 	}
-	// layer->forward_prop = Conv_forprop;
+	// layer->forward_prop = Conv_forprop; // damn, all my function pointers are gonna have to be different now
 	// layer->backward_prop = Conv_backprop;
 	layer->channels = num_channels;
+	layer->stride = stride; 
+	layer->padding = padding;
 	layer->input = NULL;
 	layer->output = NULL;
 	layer->type = 2;
 	layer->num_filters = num_filters;
 	layer->filter_rows = filter_rows;
 	layer->filter_cols = filter_cols;
-	layer->convFilters = (float ****) malloc(sizeof(float***)*num_filters);
+	layer->convFilters = (double ****) malloc(sizeof(double***)*num_filters);
 	if(layer->convFilters == NULL){
 		fprintf(stderr, "Failed to allocate memory\n");
 		free(layer);
 		return NULL;
 	}
 	for(int i=0; i< num_filters; i++){
-		layer->convFilters[i] = (float***) malloc(sizeof(float**) * filter_rows);
-		if (layer->convFilters[i] == NULL) {
+		layer->convFilters[i] = (double***) malloc(sizeof(double**) * filter_rows);
+		if (layer->convFilters[i] == NULL) { // Testing this is painful... 
 			for (int j = 0; j < i; j++) {
 				for(int w=0; w<filter_rows; w++){
 					for(int y = 0; y<filter_cols; y++){
@@ -255,7 +259,7 @@ Layer* initConv2D(int num_filters, int filter_rows, int filter_cols, int num_cha
             return NULL;
 		}
 		for(int k=0; k< filter_rows; k++){
-			layer->convFilters[i][k] = (float **) malloc(sizeof(float*) * filter_cols);
+			layer->convFilters[i][k] = (double **) malloc(sizeof(double*) * filter_cols);
 			if (layer->convFilters[i][k] == NULL) {
 				for (int j = 0; j<k; j++){
 					free(layer->convFilters[i][j]);
@@ -275,13 +279,40 @@ Layer* initConv2D(int num_filters, int filter_rows, int filter_cols, int num_cha
 				return NULL;
 			}
 			for(int p=0; p<filter_cols; p++){
-				// float b = sqrt(6)/sqrt(input_size + output_size); 
-				// float a = -1* sqrt(6)/sqrt(input_size + output_size);
+				layer->convFilters[i][k][p] = (double *) malloc(sizeof(double) * num_channels);
+				if (layer->convFilters[i][k][p] == NULL) {
+					for (int j = 0; j<p; j++){
+						free(layer->convFilters[i][k][j]);
+					}
+					free(layer->convFilters[i][k]);
+					for (int j =0; j<k; j++){
+						free(layer->convFilters[i][j]);
+					}
+					free(layer->convFilters[i]);
+					for (int j = 0; j < i; j++) {
+						for(int m =0; m<filter_rows; m++){
+							for(int y = 0; y<filter_cols; y++){
+								free(layer->convFilters[j][m][y]);
+							}
+							free(layer->convFilters[j][m]);
+						}
+						free(layer->convFilters[j]);
+					}
+					free(layer->convFilters);
+					free(layer);
+					return NULL;
+				}
+				for(int w=0; w<num_channels; w++){
+					double b = sqrt(6)/sqrt(4 + 4); 
+					double a = -1* sqrt(6)/sqrt(4 + 4);
+					double random_double = a+(((double)rand() / RAND_MAX) * (b-a));
+					layer->convFilters[i][k][p][w] = random_double;
+				}
 			}
 		}
 	}
 	return layer;
-	// float random_float = ((float)rand() / RAND_MAX)*0.6- 0.3;
+	// double random_double = ((double)rand() / RAND_MAX)*0.6- 0.3;
 }
 Layer* initFC(int input_size, int output_size){ // For fully connected layer, initialize and randomize weights, set forprop and backprop
 	srand(time(NULL));
@@ -292,24 +323,24 @@ Layer* initFC(int input_size, int output_size){ // For fully connected layer, in
 	}
 	layer->input_size = input_size;
 	layer->output_size = output_size;
-	layer->bias = (float *) malloc(output_size * sizeof(float));
+	layer->bias = (double *) malloc(output_size * sizeof(double));
         if(layer->bias == NULL){
             fprintf(stderr, "Memory allocation failed.\n");
 			free(layer);
 			return NULL;
         }
 	for (int i=0; i<output_size; i++){
-        float random_float = ((float)rand() / RAND_MAX)*0.6- 0.3;
-		layer->bias[i] = random_float;
+        double random_double = ((double)rand() / RAND_MAX)*0.6- 0.3;
+		layer->bias[i] = random_double;
 	}
-	layer->weights = (float **)malloc(input_size * sizeof(float *));
+	layer->weights = (double **)malloc(input_size * sizeof(double *));
 	if (layer->weights == NULL){
 		printf("Failed to allocate memory\n");
 		free(layer);
 		return NULL;
 	}
 	for (int i = 0; i < input_size; i++) {
-        	layer->weights[i] = (float*)malloc(output_size * sizeof(float));
+        	layer->weights[i] = (double*)malloc(output_size * sizeof(double));
         	if (layer->weights[i] == NULL) {
             		fprintf(stderr, "Memory allocation failed.\n");
             	// You may need to free previously allocated memory here
@@ -321,11 +352,11 @@ Layer* initFC(int input_size, int output_size){ // For fully connected layer, in
             		return NULL;
         	}
 		for (int j = 0; j < output_size; j++) {
-			float b = sqrt(6)/sqrt(input_size + output_size);
-			float a = -1* sqrt(6)/sqrt(input_size + output_size); // Xavier Weight initialization
-			float random_float = a+(((float)rand() / RAND_MAX) * (b-a));
-                       	layer->weights[i][j] = random_float;
-        	}
+			double b = sqrt(6)/sqrt(input_size + output_size);
+			double a = -1* sqrt(6)/sqrt(input_size + output_size); // Xavier Weight initialization
+			double random_double = a+(((double)rand() / RAND_MAX) * (b-a));
+            layer->weights[i][j] = random_double;
+        }
     }
 	layer->forward_prop = FC_forprop;
 	layer->backward_prop = FC_backprop;
@@ -335,8 +366,14 @@ Layer* initFC(int input_size, int output_size){ // For fully connected layer, in
 	return layer;
 
 }
-static float* activation_forprop(Layer *layer, float *input_data){ // forward pass for activation layer
-	float *result = (float *)malloc(layer->output_size * sizeof(float));
+static double*** Conv_forprop(Layer *layer, double ***input_data){
+	return NULL;
+}
+static double*** Conv_backprop(Layer *layer, double*** output_error, double learning_rate){
+	return NULL;
+}
+static double* activation_forprop(Layer *layer, double *input_data){ // forward pass for activation layer
+	double *result = (double *)malloc(layer->output_size * sizeof(double));
 	if (layer == NULL){
 		fprintf(stderr, "Failed to forward propagate layer\n");
 		return NULL;
@@ -350,13 +387,13 @@ static float* activation_forprop(Layer *layer, float *input_data){ // forward pa
 	layer->output = result;
 	return result;
 }
-static float* activation_backprop(Layer *layer, float *output_error, float learning_rate){ // backward pass for activation layer
-	float act[layer->output_size];
+static double* activation_backprop(Layer *layer, double *output_error, double learning_rate){ // backward pass for activation layer
+	double act[layer->output_size];
 	layer->Ddx_activation(layer->input, layer->input_size, act);
 	for (int i=0; i<layer->input_size; i++){
 		act[i] = act[i] * output_error[i];	
 	}
-	float *temp=(float*)realloc(output_error, layer->input_size * sizeof(float));
+	double *temp=(double*)realloc(output_error, layer->input_size * sizeof(double));
 	if (temp == NULL){
 		fprintf(stderr, "Out of memory error\n");
 		return NULL;
@@ -366,8 +403,8 @@ static float* activation_backprop(Layer *layer, float *output_error, float learn
 	}
 	return temp;
 }
-static float* FC_forprop(Layer *layer, float *input_data){ // forward prop for Dense layer 
-	float *result = (float *)malloc(layer->output_size * sizeof(float));
+static double* FC_forprop(Layer *layer, double *input_data){ // forward prop for Dense layer 
+	double *result = (double *)malloc(layer->output_size * sizeof(double));
 	layer->input = input_data;
 	for (int col = 0; col < layer->output_size; col++) {
         	result[col] = 0;
@@ -380,15 +417,15 @@ static float* FC_forprop(Layer *layer, float *input_data){ // forward prop for D
 	return result;
 
 }
-static float* FC_backprop(Layer *layer, float *output_error, float learning_rate){ // backprop for Dense layer
-	float input_error[layer->input_size];
+static double* FC_backprop(Layer *layer, double *output_error, double learning_rate){ // backprop for Dense layer
+	double input_error[layer->input_size];
 	for (int i = 0; i < layer->input_size; i++) {
         	input_error[i] = 0;
         	for (int j = 0; j < layer->output_size; j++) {
             		input_error[i] += layer->weights[i][j] * output_error[j];
         	}
     	}
-	float weights_error[layer->input_size][layer->output_size];
+	double weights_error[layer->input_size][layer->output_size];
 	for (int i = 0; i < layer->input_size; i++) {
         	for (int j = 0; j < layer->output_size; j++) {
             		weights_error[i][j] = layer->input[i] * output_error[j];
@@ -403,7 +440,7 @@ static float* FC_backprop(Layer *layer, float *output_error, float learning_rate
 			layer->weights[i][j] += (learning_rate * weights_error[i][j]);
 		}
 	}
-	float* interim = (float*)realloc(output_error, layer->input_size*sizeof(float));
+	double* interim = (double*)realloc(output_error, layer->input_size*sizeof(double));
 	for(int i=0; i< layer->input_size; i++){
 		interim[i] = input_error[i];
 	}
@@ -421,6 +458,12 @@ void destroyNetwork(Network *net){
 				free(curr->weights);
 			free(curr->bias);
 		}
+		else{
+			if(curr->type == 2){
+				fprintf(stderr, "!!!!!!");
+				// free(the boy); (he aint do nothing)
+			}
+		}
 		free(curr);
 		curr = next;
 	}
@@ -434,7 +477,7 @@ void enableVisualizer(Network *net, int flag){
 		net->visualizer = 0; 
 	}
 }
-void reshapeImages(uint8_t *flatData, float (*reshapedData)[NUM_IMAGES][28][28]) {
+void reshapeImages(uint8_t *flatData, double (*reshapedData)[NUM_IMAGES][28][28]) {
     for (int i = 0; i < NUM_IMAGES; ++i) {
         for (int row = 0; row < 28; ++row) {
             for (int col = 0; col < 28; ++col) {
@@ -460,26 +503,26 @@ int main(){
 		perror("Error opening file");
 		return 1;
     }
-	float testImages[NUM_IMAGES][28][28];
+	double testImages[NUM_IMAGES][28][28];
 	int magic_number=0;
 	int number_of_images=0;
 	int n_rows=0;
 	int n_cols=0;
-	// fread(&magic_number, sizeof(uint32_t), 1, file);
-	fread((char*)&magic_number,sizeof(magic_number),1,file); 
+	// x = fread(&magic_number, sizeof(uint32_t), 1, file);
+	size_t x = fread((char*)&magic_number,sizeof(magic_number),1,file); 
 	magic_number= reverseInt(magic_number);
-	fread((char*)&number_of_images,sizeof(number_of_images),1,file);
+	x = fread((char*)&number_of_images,sizeof(number_of_images),1,file);
 	number_of_images= reverseInt(number_of_images);
-	fread((char*)&n_rows,sizeof(n_rows),1,file);
+	x = fread((char*)&n_rows,sizeof(n_rows),1,file);
 	n_rows= reverseInt(n_rows);
-	fread((char*)&n_cols,sizeof(n_cols),1,file);
+	x = fread((char*)&n_cols,sizeof(n_cols),1,file);
 	n_cols= reverseInt(n_cols);
 	for(int i=0;i<number_of_images;++i){
 		for(int r=0;r<n_rows;++r){
 			for(int c=0;c<n_cols;++c){
 				unsigned char temp=0;
-				fread((char*) &temp,sizeof(temp),1,file);
-				testImages[i][r][c] = (float) temp;
+				x = fread((char*) &temp,sizeof(temp),1,file);
+				testImages[i][r][c] = (double) temp;
 
 			}
 		}
@@ -491,26 +534,26 @@ int main(){
 		perror("Error opening file");
 		return 1;
     }
-	float train_images[NUM_IMAGES_TRAIN][28][28];
+	double train_images[NUM_IMAGES_TRAIN][28][28];
 	int magic_number_train=0;
 	int number_of_images_train=0;
 	int n_rows_train=0;
 	int n_cols_train=0;
-	fread((char*)&magic_number_train,sizeof(magic_number_train),1,file2); 
+	x = fread((char*)&magic_number_train,sizeof(magic_number_train),1,file2); 
 	magic_number_train= reverseInt(magic_number_train);
-	fread((char*)&number_of_images_train,sizeof(number_of_images_train),1,file2);
+	x = fread((char*)&number_of_images_train,sizeof(number_of_images_train),1,file2);
 	number_of_images_train= reverseInt(number_of_images_train);
 	// printf("%d\n",number_of_images_train);
-	fread((char*)&n_rows_train,sizeof(n_rows_train),1,file2);
+	x = fread((char*)&n_rows_train,sizeof(n_rows_train),1,file2);
 	n_rows_train= reverseInt(n_rows_train);
-	fread((char*)&n_cols_train,sizeof(n_cols_train),1,file2);
+	x = fread((char*)&n_cols_train,sizeof(n_cols_train),1,file2);
 	n_cols= reverseInt(n_cols_train);
 	for(int i=0;i<number_of_images;++i){
 		for(int r=0;r<n_rows;++r){
 			for(int c=0;c<n_cols;++c){
 				unsigned char temp=0;
-				fread((char*) &temp,sizeof(temp),1,file2);
-				train_images[i][r][c] = (float) temp;
+				x = fread((char*) &temp,sizeof(temp),1,file2);
+				train_images[i][r][c] = (double) temp;
 			}
 		}
 	}
@@ -521,16 +564,16 @@ int main(){
 		return 1;
     }
 	int magic_number_labels= 0;
-    fread((char *)&magic_number_labels, sizeof(magic_number_labels),1, file3);
+    x = fread((char *)&magic_number_labels, sizeof(magic_number_labels),1, file3);
     magic_number_labels = reverseInt(magic_number_labels);
 	int number_of_labels=0;
-	fread((char *)&number_of_labels, sizeof(number_of_labels),1,file3);
+	x = fread((char *)&number_of_labels, sizeof(number_of_labels),1,file3);
 	number_of_labels = reverseInt(number_of_labels);
-	float test_labels[number_of_labels];
+	double test_labels[number_of_labels];
 	for(int i=0; i< number_of_labels;i++){
 		unsigned char temp = 0;
-		fread((char *) &temp, sizeof(temp), 1,file3);
-		test_labels[i]= (float) temp;
+		x = fread((char *) &temp, sizeof(temp), 1,file3);
+		test_labels[i]= (double) temp;
 	}
 	fclose(file3);
 	FILE *file4 = fopen("MNIST/train-labels-idx1-ubyte/train-labels.idx1-ubyte", "rb");
@@ -539,19 +582,20 @@ int main(){
 		return 1;
     }
 	int magic_number_labels_train= 0;
-    fread((char *)&magic_number_labels_train, sizeof(magic_number_labels_train),1, file4);
+    x = fread((char *)&magic_number_labels_train, sizeof(magic_number_labels_train),1, file4);
     magic_number_labels_train = reverseInt(magic_number_labels_train);
 	int number_of_labels_train=0;
-	fread((char *)&number_of_labels_train, sizeof(number_of_labels_train),1,file4);
+	x = fread((char *)&number_of_labels_train, sizeof(number_of_labels_train),1,file4);
 	number_of_labels_train = reverseInt(number_of_labels_train);
-	float train_labels[number_of_labels_train];
+	double train_labels[number_of_labels_train];
 	for(int i=0; i< number_of_labels_train;i++){
 		unsigned char temp = 0;
-		fread((char *) &temp, sizeof(temp), 1,file4);
-		train_labels[i]= (float) temp;
+		x = fread((char *) &temp, sizeof(temp), 1,file4);
+		train_labels[i]= (double) temp;
 	}
 	fclose(file4);
 	
+	Layer *layerConv = initConv2D(3, 24, 24, 3, 2, 2);
 	Network *net = initNetwork(mean_squared_error, mean_squared_prime);
 	Layer *layer = initFC(2, 4);
 	Layer *layertwo = initActivation(tanh_activation, tanh_p, 3);
@@ -565,14 +609,14 @@ int main(){
 	// addLayer(net, layerf);
 	//this one down below this is supposed to be commented
 	/*
-	float **input = (float**)malloc(4*sizeof(float*));
+	double **input = (double**)malloc(4*sizeof(double*));
 	for (int i=0; i<4; i++){
-		input[i] = (float *)malloc(2* sizeof(float));
+		input[i] = (double *)malloc(2* sizeof(double));
 	}
 	*/
 	//This one down here can be uncommented
 	/*
-	float input[4][2];
+	double input[4][2];
 	input[0][0] = 0.0;
 	input[0][1] = 0.0;
 	input[1][0] = 0.0;
@@ -584,20 +628,20 @@ int main(){
 	*/
 	// comment down is ok 
 	/*
-	float **expected = (float **) malloc(4*sizeof(float*));
+	double **expected = (double **) malloc(4*sizeof(double*));
 	for (int i=0; i<4; i++){
-		expected[i] = (float *) malloc(sizeof(float));
+		expected[i] = (double *) malloc(sizeof(double));
 	}
 	*/
 	//uncomment down
 	/*
-	float expected[4][1];
+	double expected[4][1];
 	expected[0][0] = 1;
 	expected[1][0] = 0;
 	expected[2][0] = 0;
 	expected[3][0] = 1;
 	fit(net,4,2,1,input, expected, 1000, 0.1);
-	float **out=predict(net, 4,2,input);
+	double **out=predict(net, 4,2,input);
 	for(int i=0; i<4; i++){
 		printf("%f\n", out[i][0]);
 	}
@@ -611,11 +655,11 @@ int main(){
 	return 0;
 	//end code
 
-	/*float *result;
-	float* resultone;
-	float *input = (float*)malloc(784*sizeof(float));
-	float *output = (float*)malloc(10*sizeof(float));
-	float **holder = (float**)malloc(sizeof(float*));
+	/*double *result;
+	double* resultone;
+	double *input = (double*)malloc(784*sizeof(double));
+	double *output = (double*)malloc(10*sizeof(double));
+	double **holder = (double**)malloc(sizeof(double*));
 	for (int i=0; i<784; i++){
 		input[i] = 2;
 	}
@@ -626,7 +670,7 @@ int main(){
 	for (int i=0; i<layer->output_size; i++){
 		printf("%f\n", result[i]);
 	}
-	float learning_rate = 0.1;
+	double learning_rate = 0.1;
 
 	resultone = layer->backward_prop(layer, output, learning_rate);
 	for (int i=0; i<784; i++){
