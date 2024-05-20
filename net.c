@@ -211,7 +211,7 @@ Layer* initActivation(activation a, activation_p ap, int input_size){ // Using g
 // What about channels on an immage?
 // alternative is just to have the filters be 4d array but make the channels 1 for grayscale images
 // i think this is better 
-// figure out the exact logistics for this shit because allocating the filters as a pointer map probably
+// figure out the exact logistics for this because allocating the filters as a pointer map probably
 // risks memory fragmentation. Maybe want to just keep the 4d array as a 1d list and use index arithmetic. 
 Layer* initConv2D(int num_filters, int filter_rows, int filter_cols, int num_channels, int stride, int padding){
 	srand(time(NULL));
