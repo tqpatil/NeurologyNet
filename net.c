@@ -488,7 +488,7 @@ int reverseInt (int i)
 
 int main(void)
 {
-	/* Seed random for weight init */
+	// Seed random for weight init
 	srand((unsigned)time(NULL));
 
 	FILE *file = fopen("MNIST/t10k-images-idx3-ubyte/t10k-images.idx3-ubyte", "rb");
@@ -563,7 +563,6 @@ int main(void)
 			}
 	fclose(file2);
 
-	/* Read test labels */
 	FILE *file3 = fopen("MNIST/t10k-labels-idx1-ubyte/t10k-labels.idx1-ubyte", "rb");
 	if (!file3) {
 		perror("Error opening test labels file");
@@ -607,7 +606,7 @@ int main(void)
 	}
 	fclose(file4);
 
-	/* Prepare a small training subset to train quickly */
+	// Train on a subset of our data for quick testing
 	int num_train = 2000;
 	if (num_train > number_of_images_train)
 		num_train = number_of_images_train;
