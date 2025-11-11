@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -O3 -lm
+CFLAGS = -O3 -lm -pthread
 TARGET = net
 
 all: $(TARGET)

@@ -3,6 +3,12 @@
 #define NUM_IMAGES 10000
 #define IMAGE_SIZE 784
 #define NUM_IMAGES_TRAIN 60000
+#define THREAD_POOL_DEFAULT 4
+#define JOB_QUEUE_SIZE 10000
+
+static void* worker_thread(void *arg);
+static void thread_pool_enqueue(ThreadPool *pool, void (*task)(void*), void *arg);
+static void thread_pool_wait(ThreadPool *pool);
 
 static double*** Conv_forprop(Layer *layer, double ***input_data);
 static double*** Conv_backprop(Layer *layer, double*** output_error, double learning_rate);
@@ -10,9 +16,10 @@ static double* FC_backprop(Layer *layer, double *output_error, double learning_r
 static double* FC_forprop(Layer *layer, double *input_data);
 static double* activation_backprop(Layer *layer, double *output_error, double learning_rate);
 static double* activation_forprop(Layer *layer, double *input_data);
+static double* flatten_forprop(Layer *layer, double *input_data);
+static double* flatten_backprop(Layer *layer, double *output_error, double learning_rate);
 
-double mean_squared_error(double* expected, double* result, int array_length)
-{
+double mean_squared_error(double* expected, double* result, int array_length) {
 	double error = 0.0;
 	for (int i = 0; i < array_length; ++i) {
 		double d = expected[i] - result[i];
@@ -21,40 +28,144 @@ double mean_squared_error(double* expected, double* result, int array_length)
 	return error / array_length;
 }
 
-void mean_squared_prime(double* expected, double* result, int array_length, double *output)
-{
+void mean_squared_prime(double* expected, double* result, int array_length, double *output) {
 	for (int i = 0; i < array_length; ++i)
 		output[i] = (2.0 * (expected[i] - result[i])) / array_length;
 }
 
-void relu_activation(double *input, int input_size, double *result)
-{
+void relu_activation(double *input, int input_size, double *result) {
 	for (int i = 0; i < input_size; ++i)
 		result[i] = input[i] > 0.0 ? input[i] : 0.0;
 }
 
-void relu_p(double *input, int input_size, double *result)
-{
+void relu_p(double *input, int input_size, double *result) {
 	for (int i = 0; i < input_size; ++i)
 		result[i] = input[i] > 0.0 ? 1.0 : 0.0;
 }
 
-void tanh_activation(double *input, int input_size, double *result)
-{
+void tanh_activation(double *input, int input_size, double *result) {
 	for (int i = 0; i < input_size; ++i)
 		result[i] = tanh(input[i]);
 }
 
-void tanh_p(double *input, int input_size, double *result)
-{
+void tanh_p(double *input, int input_size, double *result) {
 	for (int i = 0; i < input_size; ++i) {
 		double t = tanh(input[i]);
 		result[i] = 1.0 - (t * t);
 	}
 }
 
-Network* initNetwork(loss Loss, loss_prime Loss_prime)
-{
+static void* worker_thread(void *arg) {
+	ThreadPool *pool = (ThreadPool *)arg;
+	
+	while (1) {
+		pthread_mutex_lock(&pool->lock);
+		
+		while (pool->queue_head == pool->queue_tail && !pool->shutdown)
+			pthread_cond_wait(&pool->notify, &pool->lock);
+		
+		if (pool->shutdown) {
+			pthread_mutex_unlock(&pool->lock);
+			break;
+		}
+		
+		WorkerJob job = pool->job_queue[pool->queue_head];
+		pool->queue_head = (pool->queue_head + 1) % pool->queue_size;
+		
+		pthread_mutex_unlock(&pool->lock);
+		
+		job.task(job.arg);
+	}
+	
+	return NULL;
+}
+
+static void thread_pool_enqueue(ThreadPool *pool, void (*task)(void*), void *arg) {
+	if (!pool || !task)
+		return;
+	
+	pthread_mutex_lock(&pool->lock);
+	
+	int next_tail = (pool->queue_tail + 1) % pool->queue_size;
+	if (next_tail == pool->queue_head) {
+		pthread_mutex_unlock(&pool->lock);
+		return;
+	}
+	
+	pool->job_queue[pool->queue_tail].task = task;
+	pool->job_queue[pool->queue_tail].arg = arg;
+	pool->queue_tail = next_tail;
+	
+	pthread_cond_signal(&pool->notify);
+	pthread_mutex_unlock(&pool->lock);
+}
+
+static void thread_pool_wait(ThreadPool *pool) {
+	if (!pool)
+		return;
+	
+	pthread_mutex_lock(&pool->lock);
+	while (pool->queue_head != pool->queue_tail)
+		pthread_cond_wait(&pool->notify, &pool->lock);
+	pthread_mutex_unlock(&pool->lock);
+}
+
+static ThreadPool* thread_pool_create(int num_threads) {
+	if (num_threads <= 0)
+		return NULL;
+	
+	ThreadPool *pool = malloc(sizeof(ThreadPool));
+	if (!pool)
+		return NULL;
+	
+	pool->num_threads = num_threads;
+	pool->queue_size = JOB_QUEUE_SIZE;
+	pool->queue_head = 0;
+	pool->queue_tail = 0;
+	pool->shutdown = 0;
+	
+	pool->job_queue = malloc(JOB_QUEUE_SIZE * sizeof(WorkerJob));
+	if (!pool->job_queue) {
+		free(pool);
+		return NULL;
+	}
+	
+	pool->threads = malloc(num_threads * sizeof(pthread_t));
+	if (!pool->threads) {
+		free(pool->job_queue);
+		free(pool);
+		return NULL;
+	}
+	
+	pthread_mutex_init(&pool->lock, NULL);
+	pthread_cond_init(&pool->notify, NULL);
+	
+	for (int i = 0; i < num_threads; ++i)
+		pthread_create(&pool->threads[i], NULL, worker_thread, pool);
+	
+	return pool;
+}
+
+static void thread_pool_destroy(ThreadPool *pool) {
+	if (!pool)
+		return;
+	
+	pthread_mutex_lock(&pool->lock);
+	pool->shutdown = 1;
+	pthread_cond_broadcast(&pool->notify);
+	pthread_mutex_unlock(&pool->lock);
+	
+	for (int i = 0; i < pool->num_threads; ++i)
+		pthread_join(pool->threads[i], NULL);
+	
+	pthread_mutex_destroy(&pool->lock);
+	pthread_cond_destroy(&pool->notify);
+	free(pool->threads);
+	free(pool->job_queue);
+	free(pool);
+}
+
+Network* initNetwork(loss Loss, loss_prime Loss_prime) {
 	Network *net = malloc(sizeof(*net));
 	if (!net)
 		return NULL;
@@ -64,11 +175,11 @@ Network* initNetwork(loss Loss, loss_prime Loss_prime)
 	net->tail = NULL;
 	net->num_layers = 0;
 	net->visualizer = 0;
+	net->thread_pool = thread_pool_create(THREAD_POOL_DEFAULT);
 	return net;
 }
 
-void addLayer(Network *net, Layer* layer)
-{
+void addLayer(Network *net, Layer* layer) {
 	if (!net || !layer)
 		return;
 	if (!net->head) {
@@ -83,8 +194,17 @@ void addLayer(Network *net, Layer* layer)
 	net->num_layers++;
 }
 
-double** predict(Network *net, int num_samples, int sample_size, double input_data[num_samples][sample_size])
-{
+void setThreadPoolSize(Network* net, int num_threads) {
+	if (!net || num_threads <= 0)
+		return;
+	
+	if (net->thread_pool)
+		thread_pool_destroy(net->thread_pool);
+	
+	net->thread_pool = thread_pool_create(num_threads);
+}
+
+double** predict(Network *net, int num_samples, int sample_size, double input_data[num_samples][sample_size]) {
 	if (!net || !net->head || !net->tail)
 		return NULL;
 
@@ -126,8 +246,7 @@ double** predict(Network *net, int num_samples, int sample_size, double input_da
 	return result;
 }
 
-void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, double x_train[num_samples][sample_size], double y_train[num_samples][sizeOfOutput], int epochs, double learning_rate)
-{
+void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, double x_train[num_samples][sample_size], double y_train[num_samples][sizeOfOutput], int epochs, double learning_rate) {
 	if (!net || !net->head || !net->tail)
 		return;
 
@@ -160,7 +279,7 @@ void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, doubl
 				e = next_e;
 				curr = curr->prev;
 			}
-			/* Make sure grad points to the latest buffer returned by backprop */
+			// Make sure grad points to the latest buffer returned by backprop
 			grad = e;
 
 			curr = net->head;
@@ -184,8 +303,7 @@ void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, doubl
 	free(grad);
 }
 
-Layer* initActivation(activation a, activation_p ap, int input_size)
-{
+Layer* initActivation(activation a, activation_p ap, int input_size) {
 	Layer *layer = malloc(sizeof(*layer));
 	if (!layer)
 		return NULL;
@@ -201,8 +319,7 @@ Layer* initActivation(activation a, activation_p ap, int input_size)
 	return layer;
 }
 
-Layer* initConv2D(int num_filters, int filter_rows, int filter_cols, int num_channels, int stride, int padding)
-{
+Layer* initConv2D(int num_filters, int filter_rows, int filter_cols, int num_channels, int stride, int padding) {
 	Layer *layer = malloc(sizeof(*layer));
 	if (!layer)
 		return NULL;
@@ -273,8 +390,7 @@ conv_alloc_fail:
 	return NULL;
 }
 
-Layer* initFC(int input_size, int output_size)
-{
+Layer* initFC(int input_size, int output_size) {
 	Layer* layer = malloc(sizeof(*layer));
 	if (!layer)
 		return NULL;
@@ -325,23 +441,188 @@ Layer* initFC(int input_size, int output_size)
 	return layer;
 }
 
-static double*** Conv_forprop(Layer *layer, double ***input_data)
-{
-	(void)layer;
-	(void)input_data;
-	return NULL;
+Layer* initFlatten(int num_filters, int height, int width) {
+	Layer *layer = malloc(sizeof(*layer));
+	if (!layer)
+		return NULL;
+
+	layer->input_size = num_filters * height * width;
+	layer->output_size = num_filters * height * width;
+	layer->num_filters = num_filters;
+	layer->filter_rows = height;
+	layer->filter_cols = width;
+	layer->forward_prop = flatten_forprop;
+	layer->backward_prop = flatten_backprop;
+	layer->input = NULL;
+	layer->output = NULL;
+	layer->type = 3;
+	layer->weights = NULL;
+	layer->bias = NULL;
+
+	return layer;
 }
 
-static double*** Conv_backprop(Layer *layer, double*** output_error, double learning_rate)
-{
-	(void)layer;
-	(void)output_error;
-	(void)learning_rate;
-	return NULL;
+static double*** Conv_forprop(Layer *layer, double ***input_data) {
+	int input_height = 28;
+	int input_width = 28;
+	int output_height = (input_height + 2 * layer->padding - layer->filter_rows) / layer->stride + 1;
+	int output_width = (input_width + 2 * layer->padding - layer->filter_cols) / layer->stride + 1;
+
+	double ***output = malloc(layer->num_filters * sizeof(double**));
+	for (int f = 0; f < layer->num_filters; ++f) {
+		output[f] = malloc(output_height * sizeof(double*));
+		for (int h = 0; h < output_height; ++h)
+			output[f][h] = malloc(output_width * sizeof(double));
+	}
+
+	double ***padded_input = NULL;
+	if (layer->padding > 0) {
+		int padded_height = input_height + 2 * layer->padding;
+		int padded_width = input_width + 2 * layer->padding;
+		padded_input = malloc(layer->channels * sizeof(double**));
+		for (int c = 0; c < layer->channels; ++c) {
+			padded_input[c] = malloc(padded_height * sizeof(double*));
+			for (int h = 0; h < padded_height; ++h) {
+				padded_input[c][h] = malloc(padded_width * sizeof(double));
+				for (int w = 0; w < padded_width; ++w)
+					padded_input[c][h][w] = 0.0;
+			}
+			for (int h = 0; h < input_height; ++h)
+				for (int w = 0; w < input_width; ++w)
+					padded_input[c][h + layer->padding][w + layer->padding] = input_data[c][h][w];
+		}
+	}
+
+	double ***active_input = padded_input ? padded_input : input_data;
+
+	for (int f = 0; f < layer->num_filters; ++f) {
+		for (int h = 0; h < output_height; ++h) {
+			for (int w = 0; w < output_width; ++w) {
+				double sum = 0.0;
+				for (int c = 0; c < layer->channels; ++c) {
+					for (int kh = 0; kh < layer->filter_rows; ++kh) {
+						for (int kw = 0; kw < layer->filter_cols; ++kw) {
+							int ih = h * layer->stride + kh;
+							int iw = w * layer->stride + kw;
+							sum += active_input[c][ih][iw] * layer->convFilters[f][kh][kw][c];
+						}
+					}
+				}
+				output[f][h][w] = sum;
+			}
+		}
+	}
+
+	if (padded_input) {
+		int padded_height = input_height + 2 * layer->padding;
+		int padded_width = input_width + 2 * layer->padding;
+		for (int c = 0; c < layer->channels; ++c) {
+			for (int h = 0; h < padded_height; ++h)
+				free(padded_input[c][h]);
+			free(padded_input[c]);
+		}
+		free(padded_input);
+	}
+
+	layer->output = (double*)output;
+	return output;
 }
 
-static double* activation_forprop(Layer *layer, double *input_data)
-{
+static double*** Conv_backprop(Layer *layer, double*** output_error, double learning_rate) {
+	int input_height = 28;
+	int input_width = 28;
+	int output_height = (input_height + 2 * layer->padding - layer->filter_rows) / layer->stride + 1;
+	int output_width = (input_width + 2 * layer->padding - layer->filter_cols) / layer->stride + 1;
+
+	double ***input_error = malloc(layer->channels * sizeof(double**));
+	int padded_height = input_height + 2 * layer->padding;
+	int padded_width = input_width + 2 * layer->padding;
+	for (int c = 0; c < layer->channels; ++c) {
+		input_error[c] = malloc(padded_height * sizeof(double*));
+		for (int h = 0; h < padded_height; ++h) {
+			input_error[c][h] = malloc(padded_width * sizeof(double));
+			for (int w = 0; w < padded_width; ++w)
+				input_error[c][h][w] = 0.0;
+		}
+	}
+
+	for (int f = 0; f < layer->num_filters; ++f) {
+		for (int h = 0; h < output_height; ++h) {
+			for (int w = 0; w < output_width; ++w) {
+				double error_val = output_error[f][h][w];
+				for (int c = 0; c < layer->channels; ++c) {
+					for (int kh = 0; kh < layer->filter_rows; ++kh) {
+						for (int kw = 0; kw < layer->filter_cols; ++kw) {
+							int ih = h * layer->stride + kh;
+							int iw = w * layer->stride + kw;
+							input_error[c][ih][iw] += error_val * layer->convFilters[f][kh][kw][c];
+						}
+					}
+				}
+			}
+		}
+	}
+
+	for (int f = 0; f < layer->num_filters; ++f) {
+		for (int h = 0; h < output_height; ++h) {
+			for (int w = 0; w < output_width; ++w) {
+				double error_val = output_error[f][h][w];
+				for (int c = 0; c < layer->channels; ++c) {
+					for (int kh = 0; kh < layer->filter_rows; ++kh) {
+						for (int kw = 0; kw < layer->filter_cols; ++kw) {
+							int ih = h * layer->stride + kh;
+							int iw = w * layer->stride + kw;
+							if (layer->padding > 0) {
+								int orig_ih = ih - layer->padding;
+								int orig_iw = iw - layer->padding;
+								if (orig_ih >= 0 && orig_ih < input_height && orig_iw >= 0 && orig_iw < input_width) {
+									double *input_ptr = (double*)layer->input;
+									int input_size = input_height * input_width;
+									int idx = c * input_size + orig_ih * input_width + orig_iw;
+									layer->convFilters[f][kh][kw][c] += learning_rate * error_val * input_ptr[idx];
+								}
+							} else {
+								double *input_ptr = (double*)layer->input;
+								int input_size = input_height * input_width;
+								int idx = c * input_size + ih * input_width + iw;
+								if (ih >= 0 && ih < input_height && iw >= 0 && iw < input_width)
+									layer->convFilters[f][kh][kw][c] += learning_rate * error_val * input_ptr[idx];
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	double ***output = malloc(layer->channels * sizeof(double**));
+	for (int c = 0; c < layer->channels; ++c) {
+		output[c] = malloc(input_height * sizeof(double*));
+		for (int h = 0; h < input_height; ++h) {
+			output[c][h] = malloc(input_width * sizeof(double));
+			for (int w = 0; w < input_width; ++w)
+				output[c][h][w] = input_error[c][h + layer->padding][w + layer->padding];
+		}
+	}
+
+	for (int c = 0; c < layer->channels; ++c) {
+		for (int h = 0; h < padded_height; ++h)
+			free(input_error[c][h]);
+		free(input_error[c]);
+	}
+	free(input_error);
+
+	for (int f = 0; f < layer->num_filters; ++f) {
+		for (int h = 0; h < output_height; ++h)
+			free(output_error[f][h]);
+		free(output_error[f]);
+	}
+	free(output_error);
+
+	return output;
+}
+
+static double* activation_forprop(Layer *layer, double *input_data) {
 	if (!layer)
 		return NULL;
 
@@ -355,8 +636,7 @@ static double* activation_forprop(Layer *layer, double *input_data)
 	return result;
 }
 
-static double* activation_backprop(Layer *layer, double *output_error, double learning_rate)
-{
+static double* activation_backprop(Layer *layer, double *output_error, double learning_rate) {
 	(void)learning_rate;
 	double act[layer->output_size];
 	layer->Ddx_activation(layer->input, layer->input_size, act);
@@ -373,8 +653,7 @@ static double* activation_backprop(Layer *layer, double *output_error, double le
 	return temp;
 }
 
-static double* FC_forprop(Layer *layer, double *input_data)
-{
+static double* FC_forprop(Layer *layer, double *input_data) {
 	double *result = malloc(layer->output_size * sizeof(double));
 	layer->input = input_data;
 	for (int col = 0; col < layer->output_size; ++col) {
@@ -387,8 +666,7 @@ static double* FC_forprop(Layer *layer, double *input_data)
 	return result;
 }
 
-static double* FC_backprop(Layer *layer, double *output_error, double learning_rate)
-{
+static double* FC_backprop(Layer *layer, double *output_error, double learning_rate) {
 	double *input_error = malloc(layer->input_size * sizeof(double));
 	for (int i = 0; i < layer->input_size; ++i) {
 		double acc = 0.0;
@@ -425,10 +703,74 @@ static double* FC_backprop(Layer *layer, double *output_error, double learning_r
 	return interim;
 }
 
-void destroyNetwork(Network *net)
-{
+static double* flatten_forprop(Layer *layer, double *input_data) {
+	double *result = malloc(layer->output_size * sizeof(double));
+	if (!result)
+		return NULL;
+
+	int height = layer->filter_rows;
+	int width = layer->filter_cols;
+	int channels = layer->num_filters;
+
+	double ***input_3d = (double***)input_data;
+	int idx = 0;
+	for (int c = 0; c < channels; ++c) {
+		for (int h = 0; h < height; ++h) {
+			for (int w = 0; w < width; ++w) {
+				result[idx++] = input_3d[c][h][w];
+			}
+		}
+	}
+
+	layer->input = input_data;
+	layer->output = result;
+	return result;
+}
+
+static double* flatten_backprop(Layer *layer, double *output_error, double learning_rate) {
+	(void)learning_rate;
+
+	int height = layer->filter_rows;
+	int width = layer->filter_cols;
+	int channels = layer->num_filters;
+
+	double ***output = malloc(channels * sizeof(double**));
+	for (int c = 0; c < channels; ++c) {
+		output[c] = malloc(height * sizeof(double*));
+		for (int h = 0; h < height; ++h) {
+			output[c][h] = malloc(width * sizeof(double));
+		}
+	}
+
+	int idx = 0;
+	for (int c = 0; c < channels; ++c) {
+		for (int h = 0; h < height; ++h) {
+			for (int w = 0; w < width; ++w) {
+				output[c][h][w] = output_error[idx++];
+			}
+		}
+	}
+
+	free(output_error);
+	return (double*)output;
+}
+
+typedef struct {
+	Network *net;
+	int sample_idx;
+	double *x_sample;
+	double *y_sample;
+	double *output;
+	double error;
+	double learning_rate;
+} ForwardPassJob;
+
+void destroyNetwork(Network *net) {
 	if (!net)
 		return;
+
+	if (net->thread_pool)
+		thread_pool_destroy(net->thread_pool);
 
 	Layer *curr = net->head;
 	while (curr) {
@@ -460,23 +802,20 @@ void destroyNetwork(Network *net)
 	free(net);
 }
 
-void enableVisualizer(Network *net, int flag)
-{
+void enableVisualizer(Network *net, int flag) {
 	if (!net)
 		return;
 	net->visualizer = flag ? 1 : 0;
 }
 
-void reshapeImages(uint8_t *flatData, double (*reshapedData)[NUM_IMAGES][28][28])
-{
+void reshapeImages(uint8_t *flatData, double (*reshapedData)[NUM_IMAGES][28][28]) {
 	for (int i = 0; i < NUM_IMAGES; ++i)
 		for (int row = 0; row < 28; ++row)
 			for (int col = 0; col < 28; ++col)
 				(*reshapedData)[i][row][col] = flatData[i * IMAGE_SIZE + row * 28 + col];
 }
 
-int reverseInt (int i)
-{
+int reverseInt (int i) {
 	unsigned char c1, c2, c3, c4;
 	c1 = i & 255;
 	c2 = (i >> 8) & 255;
@@ -486,8 +825,7 @@ int reverseInt (int i)
 	return ((int)c1 << 24) + ((int)c2 << 16) + ((int)c3 << 8) + c4;
 }
 
-int main(void)
-{
+int main(void) {
 	// Seed random for weight init
 	srand((unsigned)time(NULL));
 
@@ -638,13 +976,15 @@ int main(void)
 	}
 
 	Network *net = initNetwork(mean_squared_error, mean_squared_prime);
-	Layer *l1 = initFC(IMAGE_SIZE, 128);
-	Layer *a1 = initActivation(relu_activation, relu_p, 128);
-	Layer *l2 = initFC(128, 10);
-	addLayer(net, l1);
-	addLayer(net, a1);
-	addLayer(net, l2);
-	int epochs = 5;
+	setThreadPoolSize(net, 4);
+	Layer *fc1 = initFC(IMAGE_SIZE, 128);
+	Layer *act1 = initActivation(relu_activation, relu_p, 128);
+	Layer *fc2 = initFC(128, 10);
+	addLayer(net, fc1);
+	addLayer(net, act1);
+	addLayer(net, fc2);
+	printf("Training with 4 threads\n");
+	int epochs = 30;
 	double lr = 0.01;
 	fit(net, num_train, IMAGE_SIZE, 10, x_train, y_train, epochs, lr);
 

@@ -6,6 +6,27 @@
 #include <time.h>
 #include <math.h>
 #include <stdint.h>
+#include <pthread.h>
+
+typedef struct ThreadPool ThreadPool;
+typedef struct WorkerJob WorkerJob;
+
+struct WorkerJob {
+	void (*task)(void*);
+	void *arg;
+};
+
+struct ThreadPool {
+	pthread_t *threads;
+	WorkerJob *job_queue;
+	int queue_size;
+	int queue_head;
+	int queue_tail;
+	int num_threads;
+	int shutdown;
+	pthread_mutex_t lock;
+	pthread_cond_t notify;
+};
 
 double mean_squared_error(double* expected, double* result, int array_length);
 void mean_squared_prime(double* expected, double* result, int array_length, double *output);
@@ -22,21 +43,21 @@ typedef double* (*forward_prop)(Layer*, double*);
 typedef double* (*backward_prop)(Layer*, double*, double);
 
 struct Network {
-    Layer *head;
-    Layer *tail;
-    loss loss_function;
-    loss_prime loss_function_prime;
-    int visualizer;
-    int num_layers;
+	Layer *head;
+	Layer *tail;
+	loss loss_function;
+	loss_prime loss_function_prime;
+	ThreadPool *thread_pool;
+	int visualizer;
+	int num_layers;
 };
 
 Network* initNetwork(loss Loss, loss_prime Loss_prime);
+void setThreadPoolSize(Network* net, int num_threads);
 void addLayer(Network* net, Layer* layer);
 double** predict(Network *net, int num_samples, int sample_size, double input_data[num_samples][sample_size]);
 void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, double x_train[num_samples][sample_size], double y_train[num_samples][sizeOfOutput], int epochs, double learning_rate);
-void enableVisualizer(Network* net, int flag);
-
-struct Layer {
+void enableVisualizer(Network* net, int flag);struct Layer {
     double **weights;
     double *bias;
     double *input;
@@ -62,6 +83,7 @@ struct Layer {
 Layer* initActivation(activation a, activation_p ap, int input_size);
 Layer* initConv2D(int num_filters, int filter_rows, int filter_cols, int num_channels, int stride, int padding);
 Layer* initFC(int input_size, int output_size);
+Layer* initFlatten(int num_filters, int height, int width);
 void destroyNetwork(Network *net);
 
 #endif
