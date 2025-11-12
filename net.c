@@ -1461,10 +1461,12 @@ void destroyNetwork(Network *net) {
 					continue;
 				}
 				for (int r = 0; r < curr->filter_rows; ++r) {
-					if (!curr->convFilters[f][r])
+					if (!curr->convFilters[f][r]) {
 						continue;
-					for (int c = 0; c < curr->filter_cols; ++c)
+					}
+					for (int c = 0; c < curr->filter_cols; ++c) {
 						free(curr->convFilters[f][r][c]);
+					}
 					free(curr->convFilters[f][r]);
 				}
 				free(curr->convFilters[f]);
@@ -1555,27 +1557,35 @@ double *load_mnist_labels(const char *path, int *num_labels) {
 
 double*** flat_to_3d(double *flat_img, int channels, int height, int width) {
 	double ***img_3d = malloc(channels * sizeof(double**));
-	if (!img_3d) return NULL;
+	if (!img_3d) {
+		return NULL;
+	}
 	for (int c = 0; c < channels; ++c) {
 		img_3d[c] = malloc(height * sizeof(double*));
 		if (!img_3d[c]) {
-			for (int cc = 0; cc < c; ++cc) free(img_3d[cc]);
+			for (int cc = 0; cc < c; ++cc) {
+				free(img_3d[cc]);
+			}
 			free(img_3d);
 			return NULL;
 		}
 		for (int h = 0; h < height; ++h) {
 			img_3d[c][h] = malloc(width * sizeof(double));
 			if (!img_3d[c][h]) {
-				for (int hh = 0; hh < h; ++hh) free(img_3d[c][hh]);
+				for (int hh = 0; hh < h; ++hh){
+					free(img_3d[c][hh]);
+				}
 				free(img_3d[c]);
 				for (int cc = 0; cc < c; ++cc) {
-					for (int hh = 0; hh < height; ++hh) free(img_3d[cc][hh]);
+					for (int hh = 0; hh < height; ++hh){
+						free(img_3d[cc][hh]);
+					} 
 					free(img_3d[cc]);
 				}
 				free(img_3d);
 				return NULL;
 			}
-			for (int w = 0; w < width; ++w) {
+			for (int w=0; w<width; ++w) {
 				img_3d[c][h][w] = flat_img[c * (height * width) + h * width + w];
 			}
 		}
@@ -1585,10 +1595,14 @@ double*** flat_to_3d(double *flat_img, int channels, int height, int width) {
 
 void free_3d(double ***img_3d, int channels, int height) {
 	if (!img_3d) return;
-	for (int c = 0; c < channels; ++c) {
-		if (!img_3d[c]) continue;
-		for (int h = 0; h < height; ++h) {
-			if (img_3d[c][h]) free(img_3d[c][h]);
+	for (int c=0; c<channels; ++c) {
+		if (!img_3d[c]) {
+			continue;
+		}
+		for (int h=0; h<height; ++h) {
+			if (img_3d[c][h]){
+				free(img_3d[c][h]);
+			} 
 		}
 		free(img_3d[c]);
 	}
@@ -1597,9 +1611,9 @@ void free_3d(double ***img_3d, int channels, int height) {
 
 // Conv wrapper definitions: call the conv implementations which use double*** but expose forward/back props as double* to work with Layer struct 
 static double* Conv_forward_wrapper(Layer *layer, double *input_data) {
-	double ***in3d = (double***)input_data;
-	double ***out3d = Conv_forprop(layer, in3d);
-	return (double*)out3d;
+	double ***in3d = (double***) input_data;
+	double ***out3d = Conv_forprop(layer,in3d);
+	return (double*) out3d;
 }
 
 static double* Conv_backward_wrapper(Layer *layer, double *output_error, double learning_rate) {
@@ -1610,7 +1624,9 @@ static double* Conv_backward_wrapper(Layer *layer, double *output_error, double 
 
 /* Demo: train a CNN-style network where inputs are 28x28 images (single channel), 10 output classes */
 static void fit_cnn(Network *net, int num_samples, int height, int width, int channels, double *x_train_flat, double *y_train_flat, int num_classes, int epochs, double learning_rate) {
-	if (!net || !net->head || !net->tail) return;
+	if (!net || !net->head || !net->tail) {
+		return;
+	}
 	for (int epoch = 0; epoch < epochs; ++epoch) {
 		double total_loss = 0.0;
 		printf("Epoch %d: ", epoch + 1);
@@ -1622,10 +1638,17 @@ static void fit_cnn(Network *net, int num_samples, int height, int width, int ch
 		for (int i = 0; i < num_samples; ++i) {
 			double *sample_ptr = x_train_flat + (size_t)i * img_stride;
 			double *norm_buf = malloc(img_stride * sizeof(double));
-			if (!norm_buf) return;
-			for (size_t k = 0; k < img_stride; ++k) norm_buf[k] = sample_ptr[k] / 255.0;
+			if (!norm_buf){
+				return;
+			}
+			for (size_t k = 0; k < img_stride; ++k){
+				norm_buf[k] = sample_ptr[k] / 255.0;
+			} 
 			double ***img_3d = flat_to_3d(norm_buf, channels, height, width);
-			if (!img_3d) { free(norm_buf); return; }
+			if (!img_3d) { 
+				free(norm_buf); 
+				return; 
+			}
 
 			Layer *curr = net->head;
 			double *output = (double*)img_3d;
@@ -1636,7 +1659,10 @@ static void fit_cnn(Network *net, int num_samples, int height, int width, int ch
 			}
 
 			double *grad = malloc(num_classes * sizeof(double));
-			if (!grad) { free_3d(img_3d, channels, height); return; }
+			if (!grad) { 
+				free_3d(img_3d, channels, height); 
+				return; 
+			}
 			double *label_ptr = y_train_flat + (size_t)i * label_stride;
 			double loss_val = net->loss_function(label_ptr, output, num_classes);
 			total_loss += loss_val;
@@ -1668,8 +1694,10 @@ static void fit_cnn(Network *net, int num_samples, int height, int width, int ch
 
 			free_3d(img_3d, channels, height);
 
-			if (i % 100 == 0) printf(".");
-			fflush(stdout);
+			if (i%100 == 0){
+				printf(".");
+				fflush(stdout);
+			} 
 		}
 
 		printf(" Loss: %.4f\n", total_loss / num_samples);
@@ -1853,8 +1881,9 @@ int main(void) {
 	}
 	printf("Test accuracy on %d samples: %.2f%%\n", num_test_eval, 100.0 * correct / num_test_eval);
 
-	for (int i = 0; i < num_test_eval; ++i)
+	for (int i = 0; i < num_test_eval; ++i) {
 		free(pred[i]);
+	}
 	free(pred);
 	free(x_train);
 	free(y_train_fc);
