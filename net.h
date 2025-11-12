@@ -32,6 +32,8 @@ struct ThreadPool {
 
 double mean_squared_error(double* expected, double* result, int array_length);
 void mean_squared_prime(double* expected, double* result, int array_length, double *output);
+double cross_entropy_loss(double* expected, double* logits, int array_length);
+void cross_entropy_prime(double* expected, double* logits, int array_length, double *output);
 
 typedef double (*loss)(double*, double*, int);
 typedef void (*loss_prime)(double*, double*, int, double*);

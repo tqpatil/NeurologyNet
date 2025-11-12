@@ -208,6 +208,159 @@ void mean_squared_prime(double* expected, double* result, int array_length, doub
 		output[i] = (2.0 * (expected[i] - result[i])) / array_length;
 }
 
+typedef struct { double *logits; double *out_buf; int start; int len; double *partial_sum; } SoftmaxExpTask;
+static void softmax_exp_task_fn(void *arg) {
+	SoftmaxExpTask *t = (SoftmaxExpTask*)arg;
+	double local_sum = 0.0;
+	for (int i = 0; i < t->len; ++i) {
+		double v = t->logits[t->start + i];
+		double e = exp(v);
+		t->out_buf[t->start + i] = e;
+		local_sum += e;
+	}
+	if (t->partial_sum) *t->partial_sum = local_sum;
+	free(t);
+}
+
+typedef struct { double *logits_or_probs; double *expected; int start; int len; int total_len; double *out_grad; } SoftmaxGradTask;
+static void softmax_grad_task_fn(void *arg) {
+	SoftmaxGradTask *t = (SoftmaxGradTask*)arg;
+	for (int i = 0; i < t->len; ++i) {
+		int idx = t->start + i;
+		t->out_grad[idx] = (t->logits_or_probs[idx] - t->expected[idx]) / (double)t->total_len;
+	}
+	free(t);
+}
+
+double cross_entropy_loss(double* expected, double* logits, int array_length) {
+	if (!logits || !expected || array_length <= 0) return 0.0;
+	double maxv = logits[0];
+	for (int i = 1; i < array_length; ++i)
+		if (logits[i] > maxv) maxv = logits[i];
+
+	double *exp_buf = malloc(array_length * sizeof(double));
+	if (!exp_buf) return 0.0;
+
+	int threads = g_pool ? g_pool->num_threads : 1;
+	if (threads <= 0) threads = 1;
+	int chunk = (array_length + threads - 1) / threads;
+	double *partials = NULL;
+	if (g_pool) partials = malloc(threads * sizeof(double));
+
+	for (int i = 0; i < array_length; ++i)
+		logits[i] = logits[i] - maxv;
+
+	if (!g_pool) {
+		double sum = 0.0;
+		for (int i = 0; i < array_length; ++i) {
+			exp_buf[i] = exp(logits[i]);
+			sum += exp_buf[i];
+		}
+		double loss = 0.0;
+		for (int i = 0; i < array_length; ++i) {
+			double p = exp_buf[i] / sum;
+			if (expected[i] > 0.0)
+				loss -= expected[i] * log(p + 1e-15);
+		}
+		free(exp_buf);
+		return loss / array_length;
+	}
+
+	for (int t = 0; t < threads; ++t) {
+		int start = t * chunk;
+		if (start >= array_length) break;
+		int len = chunk;
+		if (start + len > array_length) len = array_length - start;
+		SoftmaxExpTask *task = malloc(sizeof(SoftmaxExpTask));
+		task->logits = logits; task->out_buf = exp_buf; task->start = start; task->len = len; task->partial_sum = &partials[t];
+		thread_pool_enqueue(g_pool, softmax_exp_task_fn, task);
+	}
+	thread_pool_wait(g_pool);
+
+	double sum = 0.0;
+	for (int t = 0; t < threads; ++t) sum += partials[t];
+
+	double loss = 0.0;
+	for (int i = 0; i < array_length; ++i) {
+		double p = exp_buf[i] / sum;
+		if (expected[i] > 0.0)
+			loss -= expected[i] * log(p + 1e-15);
+		logits[i] = p;
+	}
+
+	free(partials);
+	free(exp_buf);
+	return loss / array_length;
+}
+
+void cross_entropy_prime(double* expected, double* logits, int array_length, double *output) {
+	if (!expected || !logits || !output || array_length <= 0) return;
+
+	// logits currently may be raw; compute softmax in-place into a buffer then write probs back into logits
+	double *exp_buf = malloc(array_length * sizeof(double));
+	if (!exp_buf) return;
+
+	double maxv = logits[0];
+	for (int i = 1; i < array_length; ++i)
+		if (logits[i] > maxv) maxv = logits[i];
+	for (int i = 0; i < array_length; ++i)
+		logits[i] = logits[i] - maxv;
+
+	int threads = g_pool ? g_pool->num_threads : 1;
+	if (threads <= 0) threads = 1;
+	int chunk = (array_length + threads - 1) / threads;
+	double *partials = NULL;
+	if (g_pool) partials = malloc(threads * sizeof(double));
+
+	for (int t = 0; t < threads; ++t) {
+		int start = t * chunk;
+		if (start >= array_length) break;
+		int len = chunk;
+		if (start + len > array_length) len = array_length - start;
+		SoftmaxExpTask *task = malloc(sizeof(SoftmaxExpTask));
+		task->logits = logits; task->out_buf = exp_buf; task->start = start; task->len = len; task->partial_sum = &partials[t];
+		thread_pool_enqueue(g_pool, softmax_exp_task_fn, task);
+	}
+	if (g_pool) thread_pool_wait(g_pool);
+	if (!g_pool) {
+		double sum = 0.0;
+		for (int i = 0; i < array_length; ++i) sum += exp_buf[i];
+		for (int i = 0; i < array_length; ++i) logits[i] = exp_buf[i] / sum;
+		for (int i = 0; i < array_length; ++i) output[i] = (logits[i] - expected[i]) / (double)array_length;
+		free(exp_buf);
+		return;
+	}
+
+	double sum = 0.0;
+	for (int t = 0; t < threads; ++t) sum += partials[t];
+
+	// write softmax probs into logits and compute gradient in parallel
+	for (int t = 0; t < threads; ++t) {
+		int start = t * chunk;
+		if (start >= array_length) break;
+		int len = chunk;
+		if (start + len > array_length) len = array_length - start;
+		for (int i = 0; i < len; ++i) {
+			int idx = start + i;
+			logits[idx] = exp_buf[idx] / sum;
+		}
+	}
+
+	for (int t = 0; t < threads; ++t) {
+		int start = t * chunk;
+		if (start >= array_length) break;
+		int len = chunk;
+		if (start + len > array_length) len = array_length - start;
+		SoftmaxGradTask *gt = malloc(sizeof(SoftmaxGradTask));
+		gt->logits_or_probs = logits; gt->expected = expected; gt->start = start; gt->len = len; gt->total_len = array_length; gt->out_grad = output;
+		thread_pool_enqueue(g_pool, softmax_grad_task_fn, gt);
+	}
+	thread_pool_wait(g_pool);
+
+	free(partials);
+	free(exp_buf);
+}
+
 void relu_activation(double *input, int input_size, double *result) {
 	for (int i = 0; i < input_size; ++i)
 		result[i] = input[i] > 0.0 ? input[i] : 0.0;
