@@ -31,9 +31,8 @@ Creating an infrastructure for building neural nets fully in C.
 	6. destroyNetwork(Network *net); // Object destroyer
  
 ### To Do:
- 	1. Pooling Layer
-  	2. Adam Optimizer
-   	3. Softmax/Crossentropy loss
+  	1. Adam Optimizer
+   	2. Softmax/Crossentropy loss
 
 ![image](https://github.com/tqpatil/NeurologyNet/assets/34226808/f0eb27d6-c078-46a3-9c05-334c166c4df7)
 
