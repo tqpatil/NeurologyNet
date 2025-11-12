@@ -10,6 +10,179 @@ static void* worker_thread(void *arg);
 static void thread_pool_enqueue(ThreadPool *pool, void (*task)(void*), void *arg);
 static void thread_pool_wait(ThreadPool *pool);
 
+static ThreadPool *g_pool = NULL;
+
+typedef struct { Layer *layer; double ***active_input; double **out2d; int f; int out_h; int out_w; } ConvForTask;
+static void conv_forprop_task_fn(void *arg) {
+	ConvForTask *t = (ConvForTask*)arg;
+	Layer *ly = t->layer;
+	int out_h = t->out_h, out_w = t->out_w;
+	for (int h = 0; h < out_h; ++h) {
+		for (int w = 0; w < out_w; ++w) {
+			double sum = 0.0;
+			for (int c = 0; c < ly->channels; ++c) {
+				for (int kh = 0; kh < ly->filter_rows; ++kh) {
+					for (int kw = 0; kw < ly->filter_cols; ++kw) {
+						int ih = h * ly->stride + kh;
+						int iw = w * ly->stride + kw;
+						sum += t->active_input[c][ih][iw] * ly->convFilters[t->f][kh][kw][c];
+					}
+				}
+			}
+			t->out2d[h][w] = sum;
+		}
+	}
+	free(t);
+}
+
+typedef struct { Layer *layer; int channel; int out_h; int out_w; int in_h; int in_w; double ***output_error; double ***input_error; } ConvInputTask;
+static void conv_input_task_fn(void *arg) {
+	ConvInputTask *t = (ConvInputTask*)arg;
+	Layer *ly = t->layer;
+	int c = t->channel;
+	for (int f = 0; f < ly->num_filters; ++f) {
+		for (int h = 0; h < t->out_h; ++h) {
+			for (int w = 0; w < t->out_w; ++w) {
+				double error_val = t->output_error[f][h][w];
+				for (int kh = 0; kh < ly->filter_rows; ++kh) {
+					for (int kw = 0; kw < ly->filter_cols; ++kw) {
+						int ih = h * ly->stride + kh;
+						int iw = w * ly->stride + kw;
+						t->input_error[c][ih][iw] += error_val * ly->convFilters[f][kh][kw][c];
+					}
+				}
+			}
+		}
+	}
+	free(t);
+}
+
+typedef struct { Layer *layer; int f; int out_h; int out_w; int in_h; int in_w; double learning_rate; double ***output_error; } ConvBackTask;
+static void conv_back_task_fn(void *arg) {
+	ConvBackTask *t = (ConvBackTask*)arg;
+	Layer *ly = t->layer;
+	int f = t->f;
+	for (int h = 0; h < t->out_h; ++h) {
+		for (int w = 0; w < t->out_w; ++w) {
+			double error_val = t->output_error[f][h][w];
+			for (int c = 0; c < ly->channels; ++c) {
+				for (int kh = 0; kh < ly->filter_rows; ++kh) {
+					for (int kw = 0; kw < ly->filter_cols; ++kw) {
+						int ih = h * ly->stride + kh;
+						int iw = w * ly->stride + kw;
+						if (ly->padding > 0) {
+							int orig_ih = ih - ly->padding;
+							int orig_iw = iw - ly->padding;
+							if (orig_ih >= 0 && orig_ih < t->in_h && orig_iw >= 0 && orig_iw < t->in_w) {
+								double *input_ptr = (double*)ly->input;
+								int input_size = t->in_h * t->in_w;
+								int idx = c * input_size + orig_ih * t->in_w + orig_iw;
+								ly->convFilters[f][kh][kw][c] += t->learning_rate * error_val * input_ptr[idx];
+							}
+						} else {
+							double *input_ptr = (double*)ly->input;
+							int input_size = t->in_h * t->in_w;
+							int idx = c * input_size + ih * t->in_w + iw;
+							if (ih >= 0 && ih < t->in_h && iw >= 0 && iw < t->in_w)
+								ly->convFilters[f][kh][kw][c] += t->learning_rate * error_val * input_ptr[idx];
+						}
+					}
+				}
+			}
+		}
+	}
+	free(t);
+}
+
+typedef struct { Layer *layer; double *input; double *result; int start; int end; } FCForTask;
+static void fc_forprop_task_fn(void *arg) {
+	FCForTask *t = (FCForTask*)arg;
+	for (int col = t->start; col < t->end; ++col) {
+		double acc = 0.0;
+		for (int row = 0; row < t->layer->input_size; ++row)
+			acc += t->layer->weights[row][col] * t->input[row];
+		t->result[col] = acc + t->layer->bias[col];
+	}
+	free(t);
+}
+
+typedef struct { Layer *layer; int start; int end; double *output_error; double *dest; } InputErrTask;
+static void input_err_task_fn(void *arg) {
+	InputErrTask *t = (InputErrTask*)arg;
+	for (int i = t->start; i < t->end; ++i) {
+		double acc = 0.0;
+		for (int j = 0; j < t->layer->output_size; ++j)
+			acc += t->layer->weights[i][j] * t->output_error[j];
+		t->dest[i] = acc;
+	}
+	free(t);
+}
+
+typedef struct { Layer *layer; int start_col; int end_col; double *input_vec; double *output_err; double lr; } WeightUpdTask;
+static void weight_upd_task_fn(void *arg) {
+	WeightUpdTask *t = (WeightUpdTask*)arg;
+	for (int j = t->start_col; j < t->end_col; ++j) {
+		t->layer->bias[j] += t->lr * t->output_err[j];
+		for (int i = 0; i < t->layer->input_size; ++i)
+			t->layer->weights[i][j] += t->lr * t->input_vec[i] * t->output_err[j];
+	}
+	free(t);
+}
+
+typedef struct { Layer *layer; double *in; double *out; int start; int len; } ActTask;
+static void act_task_fn(void *arg) {
+	ActTask *t = (ActTask*)arg;
+	t->layer->Activation(t->in + t->start, t->len, t->out + t->start);
+	free(t);
+}
+
+typedef struct { Layer *layer; double *in; double *out_err; int start; int len; } ActBackTask;
+static void act_back_task_fn(void *arg) {
+	ActBackTask *t = (ActBackTask*)arg;
+	double *buf = malloc(t->len * sizeof(double));
+	t->layer->Ddx_activation(t->in + t->start, t->len, buf);
+	for (int i = 0; i < t->len; ++i)
+		t->out_err[t->start + i] = buf[i] * t->out_err[t->start + i];
+	free(buf);
+	free(t);
+}
+
+typedef struct { double *input_data; double *output; int *mask; int channel; int in_h; int in_w; int out_h; int out_w; int pool_h; int pool_w; int stride; } MaxPoolTask;
+static void maxpool_task_fn(void *arg) {
+	MaxPoolTask *t = (MaxPoolTask*)arg;
+	int c = t->channel;
+	for (int oh = 0; oh < t->out_h; ++oh) {
+		for (int ow = 0; ow < t->out_w; ++ow) {
+			double best = -INFINITY;
+			int best_idx = 0;
+			for (int ph = 0; ph < t->pool_h; ++ph) {
+				for (int pw = 0; pw < t->pool_w; ++pw) {
+					int ih = oh * t->stride + ph;
+					int iw = ow * t->stride + pw;
+					int idx = c * (t->in_h * t->in_w) + ih * t->in_w + iw;
+					double val = t->input_data[idx];
+					if (val > best) { best = val; best_idx = idx; }
+				}
+			}
+			int out_index = c * (t->out_h * t->out_w) + oh * t->out_w + ow;
+			t->output[out_index] = best;
+			t->mask[out_index] = best_idx;
+		}
+	}
+	free(t);
+}
+
+typedef struct { int *mask; double *out_err; double *dest; int start; int end; } MaxPoolBackTask;
+static void maxpool_back_task_fn(void *arg) {
+	MaxPoolBackTask *t = (MaxPoolBackTask*)arg;
+	for (int i = t->start; i < t->end; ++i) {
+		int idx = t->mask[i];
+		t->dest[idx] += t->out_err[i];
+	}
+	free(t);
+}
+
+
 static double*** Conv_forprop(Layer *layer, double ***input_data);
 static double*** Conv_backprop(Layer *layer, double*** output_error, double learning_rate);
 static double* FC_backprop(Layer *layer, double *output_error, double learning_rate);
@@ -18,6 +191,8 @@ static double* activation_backprop(Layer *layer, double *output_error, double le
 static double* activation_forprop(Layer *layer, double *input_data);
 static double* flatten_forprop(Layer *layer, double *input_data);
 static double* flatten_backprop(Layer *layer, double *output_error, double learning_rate);
+static double* maxpool_forprop(Layer *layer, double *input_data);
+static double* maxpool_backprop(Layer *layer, double *output_error, double learning_rate);
 
 double mean_squared_error(double* expected, double* result, int array_length) {
 	double error = 0.0;
@@ -75,6 +250,11 @@ static void* worker_thread(void *arg) {
 		pthread_mutex_unlock(&pool->lock);
 		
 		job.task(job.arg);
+		pthread_mutex_lock(&pool->lock);
+		pool->tasks_in_progress--;
+		if (pool->tasks_in_progress == 0)
+			pthread_cond_signal(&pool->complete_cond);
+		pthread_mutex_unlock(&pool->lock);
 	}
 	
 	return NULL;
@@ -95,7 +275,7 @@ static void thread_pool_enqueue(ThreadPool *pool, void (*task)(void*), void *arg
 	pool->job_queue[pool->queue_tail].task = task;
 	pool->job_queue[pool->queue_tail].arg = arg;
 	pool->queue_tail = next_tail;
-	
+	pool->tasks_in_progress++;
 	pthread_cond_signal(&pool->notify);
 	pthread_mutex_unlock(&pool->lock);
 }
@@ -105,61 +285,64 @@ static void thread_pool_wait(ThreadPool *pool) {
 		return;
 	
 	pthread_mutex_lock(&pool->lock);
-	while (pool->queue_head != pool->queue_tail)
-		pthread_cond_wait(&pool->notify, &pool->lock);
+	while (pool->tasks_in_progress > 0)
+		pthread_cond_wait(&pool->complete_cond, &pool->lock);
 	pthread_mutex_unlock(&pool->lock);
 }
 
 static ThreadPool* thread_pool_create(int num_threads) {
 	if (num_threads <= 0)
 		return NULL;
-	
+
 	ThreadPool *pool = malloc(sizeof(ThreadPool));
 	if (!pool)
 		return NULL;
-	
+
 	pool->num_threads = num_threads;
 	pool->queue_size = JOB_QUEUE_SIZE;
 	pool->queue_head = 0;
 	pool->queue_tail = 0;
 	pool->shutdown = 0;
-	
-	pool->job_queue = malloc(JOB_QUEUE_SIZE * sizeof(WorkerJob));
+
+	pool->job_queue = malloc(pool->queue_size * sizeof(WorkerJob));
 	if (!pool->job_queue) {
 		free(pool);
 		return NULL;
 	}
-	
+
 	pool->threads = malloc(num_threads * sizeof(pthread_t));
 	if (!pool->threads) {
 		free(pool->job_queue);
 		free(pool);
 		return NULL;
 	}
-	
+
 	pthread_mutex_init(&pool->lock, NULL);
 	pthread_cond_init(&pool->notify, NULL);
-	
+	pthread_cond_init(&pool->complete_cond, NULL);
+	pool->tasks_in_progress = 0;
+
 	for (int i = 0; i < num_threads; ++i)
 		pthread_create(&pool->threads[i], NULL, worker_thread, pool);
-	
+
 	return pool;
 }
 
 static void thread_pool_destroy(ThreadPool *pool) {
 	if (!pool)
 		return;
-	
+
 	pthread_mutex_lock(&pool->lock);
 	pool->shutdown = 1;
 	pthread_cond_broadcast(&pool->notify);
 	pthread_mutex_unlock(&pool->lock);
-	
+
 	for (int i = 0; i < pool->num_threads; ++i)
 		pthread_join(pool->threads[i], NULL);
-	
+
 	pthread_mutex_destroy(&pool->lock);
 	pthread_cond_destroy(&pool->notify);
+	pthread_cond_destroy(&pool->complete_cond);
 	free(pool->threads);
 	free(pool->job_queue);
 	free(pool);
@@ -176,6 +359,7 @@ Network* initNetwork(loss Loss, loss_prime Loss_prime) {
 	net->num_layers = 0;
 	net->visualizer = 0;
 	net->thread_pool = thread_pool_create(THREAD_POOL_DEFAULT);
+	g_pool = net->thread_pool;
 	return net;
 }
 
@@ -202,6 +386,7 @@ void setThreadPoolSize(Network* net, int num_threads) {
 		thread_pool_destroy(net->thread_pool);
 	
 	net->thread_pool = thread_pool_create(num_threads);
+	g_pool = net->thread_pool;
 }
 
 double** predict(Network *net, int num_samples, int sample_size, double input_data[num_samples][sample_size]) {
@@ -462,6 +647,28 @@ Layer* initFlatten(int num_filters, int height, int width) {
 	return layer;
 }
 
+Layer* initMaxPool(int num_channels, int input_height, int input_width, int pool_rows, int pool_cols, int stride) {
+	Layer *layer = malloc(sizeof(*layer));
+	if (!layer) return NULL;
+	layer->channels = num_channels;
+	layer->input_size = num_channels * input_height * input_width;
+	layer->filter_rows = pool_rows;
+	layer->filter_cols = pool_cols;
+	layer->input_height = input_height;
+	layer->input_width = input_width;
+	int out_h = (input_height - pool_rows) / stride + 1;
+	int out_w = (input_width - pool_cols) / stride + 1;
+	layer->output_size = num_channels * out_h * out_w;
+	layer->stride = stride;
+	layer->padding = 0;
+	layer->forward_prop = maxpool_forprop;
+	layer->backward_prop = maxpool_backprop;
+	layer->input = NULL;
+	layer->output = NULL;
+	layer->type = 4;
+	return layer;
+}
+
 static double*** Conv_forprop(Layer *layer, double ***input_data) {
 	int input_height = 28;
 	int input_width = 28;
@@ -494,23 +701,31 @@ static double*** Conv_forprop(Layer *layer, double ***input_data) {
 	}
 
 	double ***active_input = padded_input ? padded_input : input_data;
-
-	for (int f = 0; f < layer->num_filters; ++f) {
-		for (int h = 0; h < output_height; ++h) {
-			for (int w = 0; w < output_width; ++w) {
-				double sum = 0.0;
-				for (int c = 0; c < layer->channels; ++c) {
-					for (int kh = 0; kh < layer->filter_rows; ++kh) {
-						for (int kw = 0; kw < layer->filter_cols; ++kw) {
-							int ih = h * layer->stride + kh;
-							int iw = w * layer->stride + kw;
-							sum += active_input[c][ih][iw] * layer->convFilters[f][kh][kw][c];
+	if (!g_pool) {
+		for (int f = 0; f < layer->num_filters; ++f) {
+			for (int h = 0; h < output_height; ++h) {
+				for (int w = 0; w < output_width; ++w) {
+					double sum = 0.0;
+					for (int c = 0; c < layer->channels; ++c) {
+						for (int kh = 0; kh < layer->filter_rows; ++kh) {
+							for (int kw = 0; kw < layer->filter_cols; ++kw) {
+								int ih = h * layer->stride + kh;
+								int iw = w * layer->stride + kw;
+								sum += active_input[c][ih][iw] * layer->convFilters[f][kh][kw][c];
+							}
 						}
 					}
+					output[f][h][w] = sum;
 				}
-				output[f][h][w] = sum;
 			}
 		}
+	} else {
+		for (int f = 0; f < layer->num_filters; ++f) {
+			ConvForTask *t = malloc(sizeof(ConvForTask));
+			t->layer = layer; t->active_input = active_input; t->out2d = output[f]; t->f = f; t->out_h = output_height; t->out_w = output_width;
+			thread_pool_enqueue(g_pool, conv_forprop_task_fn, t);
+		}
+		thread_pool_wait(g_pool);
 	}
 
 	if (padded_input) {
@@ -546,53 +761,72 @@ static double*** Conv_backprop(Layer *layer, double*** output_error, double lear
 		}
 	}
 
-	for (int f = 0; f < layer->num_filters; ++f) {
-		for (int h = 0; h < output_height; ++h) {
-			for (int w = 0; w < output_width; ++w) {
-				double error_val = output_error[f][h][w];
-				for (int c = 0; c < layer->channels; ++c) {
-					for (int kh = 0; kh < layer->filter_rows; ++kh) {
-						for (int kw = 0; kw < layer->filter_cols; ++kw) {
-							int ih = h * layer->stride + kh;
-							int iw = w * layer->stride + kw;
-							input_error[c][ih][iw] += error_val * layer->convFilters[f][kh][kw][c];
-						}
-					}
-				}
-			}
-		}
-	}
-
-	for (int f = 0; f < layer->num_filters; ++f) {
-		for (int h = 0; h < output_height; ++h) {
-			for (int w = 0; w < output_width; ++w) {
-				double error_val = output_error[f][h][w];
-				for (int c = 0; c < layer->channels; ++c) {
-					for (int kh = 0; kh < layer->filter_rows; ++kh) {
-						for (int kw = 0; kw < layer->filter_cols; ++kw) {
-							int ih = h * layer->stride + kh;
-							int iw = w * layer->stride + kw;
-							if (layer->padding > 0) {
-								int orig_ih = ih - layer->padding;
-								int orig_iw = iw - layer->padding;
-								if (orig_ih >= 0 && orig_ih < input_height && orig_iw >= 0 && orig_iw < input_width) {
-									double *input_ptr = (double*)layer->input;
-									int input_size = input_height * input_width;
-									int idx = c * input_size + orig_ih * input_width + orig_iw;
-									layer->convFilters[f][kh][kw][c] += learning_rate * error_val * input_ptr[idx];
-								}
-							} else {
-								double *input_ptr = (double*)layer->input;
-								int input_size = input_height * input_width;
-								int idx = c * input_size + ih * input_width + iw;
-								if (ih >= 0 && ih < input_height && iw >= 0 && iw < input_width)
-									layer->convFilters[f][kh][kw][c] += learning_rate * error_val * input_ptr[idx];
+	if (!g_pool) {
+		for (int f = 0; f < layer->num_filters; ++f) {
+			for (int h = 0; h < output_height; ++h) {
+				for (int w = 0; w < output_width; ++w) {
+					double error_val = output_error[f][h][w];
+					for (int c = 0; c < layer->channels; ++c) {
+						for (int kh = 0; kh < layer->filter_rows; ++kh) {
+							for (int kw = 0; kw < layer->filter_cols; ++kw) {
+								int ih = h * layer->stride + kh;
+								int iw = w * layer->stride + kw;
+								input_error[c][ih][iw] += error_val * layer->convFilters[f][kh][kw][c];
 							}
 						}
 					}
 				}
 			}
 		}
+	} else {
+		int chs = layer->channels;
+		for (int c = 0; c < chs; ++c) {
+			ConvInputTask *t = malloc(sizeof(ConvInputTask));
+			t->layer = layer; t->channel = c; t->out_h = output_height; t->out_w = output_width; t->in_h = input_height; t->in_w = input_width; t->output_error = output_error; t->input_error = input_error;
+			thread_pool_enqueue(g_pool, conv_input_task_fn, t);
+		}
+		thread_pool_wait(g_pool);
+	}
+
+	if (!g_pool) {
+		for (int f = 0; f < layer->num_filters; ++f) {
+			for (int h = 0; h < output_height; ++h) {
+				for (int w = 0; w < output_width; ++w) {
+					double error_val = output_error[f][h][w];
+					for (int c = 0; c < layer->channels; ++c) {
+						for (int kh = 0; kh < layer->filter_rows; ++kh) {
+							for (int kw = 0; kw < layer->filter_cols; ++kw) {
+								int ih = h * layer->stride + kh;
+								int iw = w * layer->stride + kw;
+								if (layer->padding > 0) {
+									int orig_ih = ih - layer->padding;
+									int orig_iw = iw - layer->padding;
+									if (orig_ih >= 0 && orig_ih < input_height && orig_iw >= 0 && orig_iw < input_width) {
+										double *input_ptr = (double*)layer->input;
+										int input_size = input_height * input_width;
+										int idx = c * input_size + orig_ih * input_width + orig_iw;
+										layer->convFilters[f][kh][kw][c] += learning_rate * error_val * input_ptr[idx];
+									}
+								} else {
+									double *input_ptr = (double*)layer->input;
+									int input_size = input_height * input_width;
+									int idx = c * input_size + ih * input_width + iw;
+									if (ih >= 0 && ih < input_height && iw >= 0 && iw < input_width)
+										layer->convFilters[f][kh][kw][c] += learning_rate * error_val * input_ptr[idx];
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	} else {
+		for (int f = 0; f < layer->num_filters; ++f) {
+			ConvBackTask *t = malloc(sizeof(ConvBackTask));
+			t->layer = layer; t->f = f; t->out_h = output_height; t->out_w = output_width; t->in_h = input_height; t->in_w = input_width; t->learning_rate = learning_rate; t->output_error = output_error;
+			thread_pool_enqueue(g_pool, conv_back_task_fn, t);
+		}
+		thread_pool_wait(g_pool);
 	}
 
 	double ***output = malloc(layer->channels * sizeof(double**));
@@ -623,72 +857,128 @@ static double*** Conv_backprop(Layer *layer, double*** output_error, double lear
 }
 
 static double* activation_forprop(Layer *layer, double *input_data) {
-	if (!layer)
-		return NULL;
-
+	if (!layer) return NULL;
 	double *result = malloc(layer->output_size * sizeof(double));
-	if (!result)
-		return NULL;
-
+	if (!result) return NULL;
 	layer->input = input_data;
-	layer->Activation(layer->input, layer->input_size, result);
+	if (!g_pool) {
+		layer->Activation(layer->input, layer->input_size, result);
+		layer->output = result;
+		return result;
+	}
+	int chunk = (layer->input_size + g_pool->num_threads - 1) / g_pool->num_threads;
+	if (chunk < 1) chunk = 1;
+	for (int s = 0; s < layer->input_size; s += chunk) {
+		int len = chunk;
+		if (s + len > layer->input_size) len = layer->input_size - s;
+	ActTask *t = malloc(sizeof(ActTask));
+	t->layer = layer; t->in = input_data; t->out = result; t->start = s; t->len = len;
+	thread_pool_enqueue(g_pool, act_task_fn, t);
+	}
+	thread_pool_wait(g_pool);
 	layer->output = result;
 	return result;
 }
 
 static double* activation_backprop(Layer *layer, double *output_error, double learning_rate) {
 	(void)learning_rate;
-	double act[layer->output_size];
-	layer->Ddx_activation(layer->input, layer->input_size, act);
-	for (int i = 0; i < layer->input_size; ++i)
-		act[i] *= output_error[i];
-
-	double *temp = realloc(output_error, layer->input_size * sizeof(double));
-	if (!temp)
-		return NULL;
-
-	for (int i = 0; i < layer->input_size; ++i)
-		temp[i] = act[i];
-
-	return temp;
+	double *result = malloc(layer->input_size * sizeof(double));
+	if (!result) return NULL;
+	if (!g_pool) {
+		double act[layer->output_size];
+		layer->Ddx_activation(layer->input, layer->input_size, act);
+		for (int i = 0; i < layer->input_size; ++i)
+			result[i] = act[i] * output_error[i];
+		free(output_error);
+		return result;
+	}
+	int chunk = (layer->input_size + g_pool->num_threads - 1) / g_pool->num_threads;
+	if (chunk < 1) chunk = 1;
+	for (int s = 0; s < layer->input_size; s += chunk) {
+		int len = chunk;
+		if (s + len > layer->input_size) len = layer->input_size - s;
+	ActBackTask *t = malloc(sizeof(ActBackTask));
+	t->layer = layer; t->in = layer->input; t->out_err = output_error; t->start = s; t->len = len;
+	thread_pool_enqueue(g_pool, act_back_task_fn, t);
+	}
+	thread_pool_wait(g_pool);
+	for (int i = 0; i < layer->input_size; ++i) result[i] = output_error[i];
+	free(output_error);
+	return result;
 }
 
 static double* FC_forprop(Layer *layer, double *input_data) {
 	double *result = malloc(layer->output_size * sizeof(double));
+	if (!result) return NULL;
 	layer->input = input_data;
-	for (int col = 0; col < layer->output_size; ++col) {
-		double acc = 0.0;
-		for (int row = 0; row < layer->input_size; ++row)
-			acc += layer->weights[row][col] * input_data[row];
-		result[col] = acc + layer->bias[col];
+	if (!g_pool) {
+		for (int col = 0; col < layer->output_size; ++col) {
+			double acc = 0.0;
+			for (int row = 0; row < layer->input_size; ++row)
+				acc += layer->weights[row][col] * input_data[row];
+			result[col] = acc + layer->bias[col];
+		}
+		layer->output = result;
+		return result;
 	}
+
+
+	int chunk = (layer->output_size + g_pool->num_threads - 1) / g_pool->num_threads;
+	if (chunk < 1) chunk = 1;
+	for (int start = 0; start < layer->output_size; start += chunk) {
+		int end = start + chunk;
+		if (end > layer->output_size) end = layer->output_size;
+	FCForTask *t = malloc(sizeof(FCForTask));
+	t->layer = layer; t->input = input_data; t->result = result; t->start = start; t->end = end;
+	thread_pool_enqueue(g_pool, fc_forprop_task_fn, t);
+	}
+	thread_pool_wait(g_pool);
 	layer->output = result;
 	return result;
 }
 
 static double* FC_backprop(Layer *layer, double *output_error, double learning_rate) {
 	double *input_error = malloc(layer->input_size * sizeof(double));
-	for (int i = 0; i < layer->input_size; ++i) {
-		double acc = 0.0;
-		for (int j = 0; j < layer->output_size; ++j)
-			acc += layer->weights[i][j] * output_error[j];
-		input_error[i] = acc;
+	if (!input_error) return NULL;
+
+	if (!g_pool) {
+		for (int i = 0; i < layer->input_size; ++i) {
+			double acc = 0.0;
+			for (int j = 0; j < layer->output_size; ++j)
+				acc += layer->weights[i][j] * output_error[j];
+			input_error[i] = acc;
+		}
+
+		for (int i = 0; i < layer->output_size; ++i)
+			layer->bias[i] += learning_rate * output_error[i];
+
+		for (int j = 0; j < layer->output_size; ++j) {
+			for (int i = 0; i < layer->input_size; ++i)
+				layer->weights[i][j] += learning_rate * layer->input[i] * output_error[j];
+		}
+	} else {
+
+		int chunks = g_pool->num_threads > 0 ? g_pool->num_threads : 1;
+		int chunk = (layer->input_size + chunks - 1) / chunks;
+		for (int start = 0; start < layer->input_size; start += chunk) {
+			int end = start + chunk; if (end > layer->input_size) end = layer->input_size;
+			InputErrTask *t = malloc(sizeof(InputErrTask));
+			t->layer = layer; t->start = start; t->end = end; t->output_error = output_error; t->dest = input_error;
+			thread_pool_enqueue(g_pool, input_err_task_fn, t);
+		}
+		thread_pool_wait(g_pool);
+
+
+		int out_chunks = g_pool->num_threads > 0 ? g_pool->num_threads : 1;
+		int out_chunk = (layer->output_size + out_chunks - 1) / out_chunks;
+		for (int start = 0; start < layer->output_size; start += out_chunk) {
+			int end = start + out_chunk; if (end > layer->output_size) end = layer->output_size;
+			WeightUpdTask *t = malloc(sizeof(WeightUpdTask));
+			t->layer = layer; t->start_col = start; t->end_col = end; t->input_vec = layer->input; t->output_err = output_error; t->lr = learning_rate;
+			thread_pool_enqueue(g_pool, weight_upd_task_fn, t);
+		}
+		thread_pool_wait(g_pool);
 	}
-
-	double *weights_error = malloc(layer->input_size * layer->output_size * sizeof(double));
-	for (int i = 0; i < layer->input_size; ++i) {
-		for (int j = 0; j < layer->output_size; ++j)
-			weights_error[i * layer->output_size + j] = layer->input[i] * output_error[j];
-	}
-
-	for (int i = 0; i < layer->output_size; ++i)
-		layer->bias[i] += learning_rate * output_error[i];
-
-	for (int i = 0; i < layer->input_size; ++i)
-		for (int j = 0; j < layer->output_size; ++j)
-			layer->weights[i][j] += learning_rate * weights_error[i * layer->output_size + j];
-
-	free(weights_error);
 
 	double *interim = realloc(output_error, layer->input_size * sizeof(double));
 	if (!interim) {
@@ -753,6 +1043,81 @@ static double* flatten_backprop(Layer *layer, double *output_error, double learn
 
 	free(output_error);
 	return (double*)output;
+}
+
+static double* maxpool_forprop(Layer *layer, double *input_data) {
+	int channels = layer->channels;
+	int in_h = layer->input_height;
+	int in_w = layer->input_width;
+	int pool_h = layer->filter_rows;
+	int pool_w = layer->filter_cols;
+	int stride = layer->stride;
+	int out_h = (in_h - pool_h) / stride + 1;
+	int out_w = (in_w - pool_w) / stride + 1;
+	double *output = malloc(layer->output_size * sizeof(double));
+	if (!output) return NULL;
+	int *mask = malloc(layer->output_size * sizeof(int));
+	if (!mask) { free(output); return NULL; }
+	if (!g_pool) {
+		for (int c = 0; c < channels; ++c) {
+			for (int oh = 0; oh < out_h; ++oh) {
+				for (int ow = 0; ow < out_w; ++ow) {
+					double best = -INFINITY;
+					int best_idx = 0;
+					for (int ph = 0; ph < pool_h; ++ph) {
+						for (int pw = 0; pw < pool_w; ++pw) {
+							int ih = oh * stride + ph;
+							int iw = ow * stride + pw;
+							int idx = c * (in_h * in_w) + ih * in_w + iw;
+							double val = input_data[idx];
+							if (val > best) { best = val; best_idx = idx; }
+						}
+					}
+					int out_index = c * (out_h * out_w) + oh * out_w + ow;
+					output[out_index] = best;
+					mask[out_index] = best_idx;
+				}
+			}
+		}
+	} else {
+		for (int c = 0; c < channels; ++c) {
+			MaxPoolTask *t = malloc(sizeof(MaxPoolTask));
+			t->input_data = input_data; t->output = output; t->mask = mask; t->channel = c; t->in_h = in_h; t->in_w = in_w; t->out_h = out_h; t->out_w = out_w; t->pool_h = pool_h; t->pool_w = pool_w; t->stride = stride;
+			thread_pool_enqueue(g_pool, maxpool_task_fn, t);
+		}
+		thread_pool_wait(g_pool);
+	}
+	layer->input = (double*)mask;
+	layer->output = output;
+	return output;
+}
+
+static double* maxpool_backprop(Layer *layer, double *output_error, double learning_rate) {
+	(void)learning_rate;
+	int in_size = layer->input_size;
+	double *input_error = calloc(in_size, sizeof(double));
+	if (!input_error) return NULL;
+	int *mask = (int*)layer->input;
+	if (!g_pool) {
+		for (int i = 0; i < layer->output_size; ++i) {
+			int idx = mask[i];
+			input_error[idx] += output_error[i];
+		}
+		free(output_error);
+		return input_error;
+	}
+    
+	int chunks = g_pool->num_threads > 0 ? g_pool->num_threads : 1;
+	int chunk = (layer->output_size + chunks - 1) / chunks;
+	for (int s = 0; s < layer->output_size; s += chunk) {
+		int e = s + chunk; if (e > layer->output_size) e = layer->output_size;
+		MaxPoolBackTask *t = malloc(sizeof(MaxPoolBackTask));
+		t->mask = mask; t->out_err = output_error; t->dest = input_error; t->start = s; t->end = e;
+	thread_pool_enqueue(g_pool, maxpool_back_task_fn, t);
+	}
+	thread_pool_wait(g_pool);
+	free(output_error);
+	return input_error;
 }
 
 typedef struct {
@@ -829,6 +1194,7 @@ int main(void) {
 	// Seed random for weight init
 	srand((unsigned)time(NULL));
 
+	// LOADING THE MNIST DATASET
 	FILE *file = fopen("MNIST/t10k-images-idx3-ubyte/t10k-images.idx3-ubyte", "rb");
 	if (!file) {
 		perror("Error opening test images file");
@@ -943,7 +1309,7 @@ int main(void) {
 		train_labels[i] = (double) temp;
 	}
 	fclose(file4);
-
+	// END LOADING THE MNIST DATASET
 	// Train on a subset of our data for quick testing
 	int num_train = 2000;
 	if (num_train > number_of_images_train)
@@ -976,14 +1342,14 @@ int main(void) {
 	}
 
 	Network *net = initNetwork(mean_squared_error, mean_squared_prime);
-	setThreadPoolSize(net, 4);
+	setThreadPoolSize(net, 3);
 	Layer *fc1 = initFC(IMAGE_SIZE, 128);
 	Layer *act1 = initActivation(relu_activation, relu_p, 128);
 	Layer *fc2 = initFC(128, 10);
 	addLayer(net, fc1);
 	addLayer(net, act1);
 	addLayer(net, fc2);
-	printf("Training with 4 threads\n");
+	printf("Training with 3 threads\n");
 	int epochs = 30;
 	double lr = 0.01;
 	fit(net, num_train, IMAGE_SIZE, 10, x_train, y_train, epochs, lr);

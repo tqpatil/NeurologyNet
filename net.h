@@ -25,7 +25,9 @@ struct ThreadPool {
 	int num_threads;
 	int shutdown;
 	pthread_mutex_t lock;
-	pthread_cond_t notify;
+    pthread_cond_t notify;
+    pthread_cond_t complete_cond;
+    int tasks_in_progress;
 };
 
 double mean_squared_error(double* expected, double* result, int array_length);
@@ -75,6 +77,8 @@ void enableVisualizer(Network* net, int flag);struct Layer {
     int channels;
     int stride;
     int padding;
+    int input_height;
+    int input_width;
     double ****convFilters;
     Layer *next;
     Layer *prev;
@@ -84,6 +88,7 @@ Layer* initActivation(activation a, activation_p ap, int input_size);
 Layer* initConv2D(int num_filters, int filter_rows, int filter_cols, int num_channels, int stride, int padding);
 Layer* initFC(int input_size, int output_size);
 Layer* initFlatten(int num_filters, int height, int width);
+Layer* initMaxPool(int num_channels, int input_height, int input_width, int pool_rows, int pool_cols, int stride);
 void destroyNetwork(Network *net);
 
 #endif
