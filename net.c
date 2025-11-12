@@ -1461,10 +1461,12 @@ void destroyNetwork(Network *net) {
 					continue;
 				}
 				for (int r = 0; r < curr->filter_rows; ++r) {
-					if (!curr->convFilters[f][r])
+					if (!curr->convFilters[f][r]) {
 						continue;
-					for (int c = 0; c < curr->filter_cols; ++c)
+					}
+					for (int c = 0; c < curr->filter_cols; ++c) {
 						free(curr->convFilters[f][r][c]);
+					}
 					free(curr->convFilters[f][r]);
 				}
 				free(curr->convFilters[f]);
@@ -1553,38 +1555,153 @@ double *load_mnist_labels(const char *path, int *num_labels) {
 	return labels;
 }
 
-double*** flat_to_3d(double *flat_img, int height, int width) {
-	double ***img_3d = malloc(1 * sizeof(double**));
-	img_3d[0] = malloc(height * sizeof(double*));
-	for (int h = 0; h < height; ++h) {
-		img_3d[0][h] = malloc(width * sizeof(double));
-		for (int w = 0; w < width; ++w) {
-			img_3d[0][h][w] = flat_img[h * width + w];
+double*** flat_to_3d(double *flat_img, int channels, int height, int width) {
+	double ***img_3d = malloc(channels * sizeof(double**));
+	if (!img_3d) {
+		return NULL;
+	}
+	for (int c = 0; c < channels; ++c) {
+		img_3d[c] = malloc(height * sizeof(double*));
+		if (!img_3d[c]) {
+			for (int cc = 0; cc < c; ++cc) {
+				free(img_3d[cc]);
+			}
+			free(img_3d);
+			return NULL;
+		}
+		for (int h = 0; h < height; ++h) {
+			img_3d[c][h] = malloc(width * sizeof(double));
+			if (!img_3d[c][h]) {
+				for (int hh = 0; hh < h; ++hh){
+					free(img_3d[c][hh]);
+				}
+				free(img_3d[c]);
+				for (int cc = 0; cc < c; ++cc) {
+					for (int hh = 0; hh < height; ++hh){
+						free(img_3d[cc][hh]);
+					} 
+					free(img_3d[cc]);
+				}
+				free(img_3d);
+				return NULL;
+			}
+			for (int w=0; w<width; ++w) {
+				img_3d[c][h][w] = flat_img[c * (height * width) + h * width + w];
+			}
 		}
 	}
 	return img_3d;
 }
 
-void free_3d(double ***img_3d, int height) {
-	for (int h = 0; h < height; ++h) {
-		free(img_3d[0][h]);
+void free_3d(double ***img_3d, int channels, int height) {
+	if (!img_3d) return;
+	for (int c=0; c<channels; ++c) {
+		if (!img_3d[c]) {
+			continue;
+		}
+		for (int h=0; h<height; ++h) {
+			if (img_3d[c][h]){
+				free(img_3d[c][h]);
+			} 
+		}
+		free(img_3d[c]);
 	}
-	free(img_3d[0]);
 	free(img_3d);
 }
 
-/* Conv wrapper definitions: call the conv implementations which use double***
-   but expose the forward/backward props as double* to fit the Layer  */
+// Conv wrapper definitions: call the conv implementations which use double*** but expose forward/back props as double* to work with Layer struct 
 static double* Conv_forward_wrapper(Layer *layer, double *input_data) {
-	double ***in3d = (double***)input_data;
-	double ***out3d = Conv_forprop(layer, in3d);
-	return (double*)out3d;
+	double ***in3d = (double***) input_data;
+	double ***out3d = Conv_forprop(layer,in3d);
+	return (double*) out3d;
 }
 
 static double* Conv_backward_wrapper(Layer *layer, double *output_error, double learning_rate) {
 	double ***err3d = (double***)output_error;
 	double ***inerr3d = Conv_backprop(layer, err3d, learning_rate);
 	return (double*)inerr3d;
+}
+
+/* Demo: train a CNN-style network where inputs are 28x28 images (single channel), 10 output classes */
+static void fit_cnn(Network *net, int num_samples, int height, int width, int channels, double *x_train_flat, double *y_train_flat, int num_classes, int epochs, double learning_rate) {
+	if (!net || !net->head || !net->tail) {
+		return;
+	}
+	for (int epoch = 0; epoch < epochs; ++epoch) {
+		double total_loss = 0.0;
+		printf("Epoch %d: ", epoch + 1);
+		fflush(stdout);
+
+		size_t img_stride = (size_t)channels * height * width;
+		size_t label_stride = (size_t)num_classes;
+
+		for (int i = 0; i < num_samples; ++i) {
+			double *sample_ptr = x_train_flat + (size_t)i * img_stride;
+			double *norm_buf = malloc(img_stride * sizeof(double));
+			if (!norm_buf){
+				return;
+			}
+			for (size_t k = 0; k < img_stride; ++k){
+				norm_buf[k] = sample_ptr[k] / 255.0;
+			} 
+			double ***img_3d = flat_to_3d(norm_buf, channels, height, width);
+			if (!img_3d) { 
+				free(norm_buf); 
+				return; 
+			}
+
+			Layer *curr = net->head;
+			double *output = (double*)img_3d;
+			while (curr) {
+				double *new_output = curr->forward_prop(curr, output);
+				output = new_output;
+				curr = curr->next;
+			}
+
+			double *grad = malloc(num_classes * sizeof(double));
+			if (!grad) { 
+				free_3d(img_3d, channels, height); 
+				return; 
+			}
+			double *label_ptr = y_train_flat + (size_t)i * label_stride;
+			double loss_val = net->loss_function(label_ptr, output, num_classes);
+			total_loss += loss_val;
+			net->loss_function_prime(label_ptr, output, num_classes, grad);
+
+			curr = net->tail;
+			double *output_error = grad;
+			while (curr) {
+				double *new_error = curr->backward_prop(curr, output_error, learning_rate);
+				if (!new_error) {
+					free(output_error);
+					free_3d(img_3d, channels, height);
+					free(norm_buf);
+					return;
+				}
+				output_error = new_error;
+				curr = curr->prev;
+			}
+
+			curr = net->head;
+			while (curr) {
+				if (curr->output) {
+					free(curr->output);
+					curr->output = NULL;
+				}
+				curr->input = NULL;
+				curr = curr->next;
+			}
+
+			free_3d(img_3d, channels, height);
+
+			if (i%100 == 0){
+				printf(".");
+				fflush(stdout);
+			} 
+		}
+
+		printf(" Loss: %.4f\n", total_loss / num_samples);
+	}
 }
 
 int main(void) {
@@ -1675,102 +1792,9 @@ int main(void) {
 	printf("Training CNN with 4 threads for 3 epochs...\n");
 	int epochs = 3;
 	double lr = 0.01;
-	
-	// Manual training loop for CNN
-	for (int epoch = 0; epoch < epochs; ++epoch) {
-		double total_loss = 0.0;
-		printf("Epoch %d: ", epoch + 1);
-		fflush(stdout);
-		
-		for (int i = 0; i < num_train; ++i) {
-			// Prepare current sample: convert flat train_images[i] -> flat array -> 3D
-			double *flat_img = malloc(IMAGE_SIZE * sizeof(double));
-			if (!flat_img) { printf("ERROR: malloc flat_img failed\n"); return 1; }
-			for (int r = 0; r < 28; ++r) {
-				for (int c = 0; c < 28; ++c) {
-					flat_img[r * 28 + c] = train_images[i][r][c] / 255.0;
-				}
-			}
-			double ***img_3d = flat_to_3d(flat_img, 28, 28);
-
-			// Forward pass
-			Layer *curr = cnn->head;
-			double *output = (double*)img_3d;
-            
-			// printf("\n[DEBUG] Sample %d, Layer: ", i);
-			// fflush(stdout);
-            
-			while (curr) {
-				// printf("%d ", curr->type);
-				// fflush(stdout);
-                
-				double *new_output = curr->forward_prop(curr, output);
-				// fprintf(stderr, "[FORWARD] layer(type=%d) returned %p; prev_output=%p; curr==head?%d\n", curr->type, (void*)new_output, (void*)output, curr==cnn->head);
-				// fflush(stderr);
-				output = new_output;
-				curr = curr->next;
-			}
-			
-			// printf("Done ");
-			// fflush(stdout);
-
-			// if (!output) {
-			//     fprintf(stderr, "[DEBUG] ERROR: output is NULL before loss for sample %d\n", i);
-			// } else {
-			//     fprintf(stderr, "[DEBUG] output ptr=%p, first vals: %f, %f, %f\n", (void*)output, output[0], output[1], output[2]);
-			// }
-			// fflush(stderr);
-
-			// Compute loss
-			// fprintf(stderr, "[LOSS] about to call loss_function; output=%p\n", (void*)output);
-			// fflush(stderr);
-			double loss_val = cnn->loss_function(y_train[i], output, 10);
-			// fprintf(stderr, "[LOSS] loss_function returned: %f\n", loss_val);
-			// fflush(stderr);
-			total_loss += loss_val;
-			
-			// Backward pass
-			double *error = malloc(10 * sizeof(double));
-			cnn->loss_function_prime(y_train[i], output, 10, error);
-			
-			curr = cnn->tail;
-			double *output_error = error;
-			
-			while (curr) {
-				double *new_error = curr->backward_prop(curr, output_error, lr);
-				// fprintf(stderr, "[BACK] layer(type=%d) returned %p; prev_err=%p\n", curr->type, (void*)new_error, (void*)output_error);
-				// fflush(stderr);
-				if (!new_error) {
-					fprintf(stderr, "    ERROR: Layer %d backprop returned NULL\n", curr->type);
-					free(output_error);
-					free_3d(img_3d, 28);
-					free(flat_img);
-					return 1;
-				}
-				// Sanity Check
-				if (curr->type != 2 && curr->type != 3) {
-					for (int vi = 0; vi < 3; ++vi) {
-						if (!isfinite(new_error[vi])) {
-							fprintf(stderr, "    ERROR: new_error[%d] is not finite: %f\n", vi, new_error[vi]);
-							fflush(stderr);
-						}
-					}
-				}
-				output_error = new_error;
-				curr = curr->prev;
-			}
-			
-			if (i % 100 == 0) { // cool little animation
-				printf(".");
-			}
-			fflush(stdout);
-		}
-		
-		printf(" Loss: %.4f\n", total_loss / num_train);
-	}
-	
+	fit_cnn(cnn, num_train, 28, 28, 1, (double*)train_images, (double*)y_train, 10, epochs, lr);
 	printf("CNN training completed successfully!\n");
-	
+    
 	// Cleanup
 	free(y_train);
 	destroyNetwork(cnn);
@@ -1857,8 +1881,9 @@ int main(void) {
 	}
 	printf("Test accuracy on %d samples: %.2f%%\n", num_test_eval, 100.0 * correct / num_test_eval);
 
-	for (int i = 0; i < num_test_eval; ++i)
+	for (int i = 0; i < num_test_eval; ++i) {
 		free(pred[i]);
+	}
 	free(pred);
 	free(x_train);
 	free(y_train_fc);

@@ -62,8 +62,18 @@ Creating an infrastructure for building neural nets fully in C.
 	8. initMaxPool(int num_channels, int input_height, int input_width, int pool_rows, int pool_cols, int stride);
 	9. initFlatten(int num_filters, int height, int width);
 	10. setThreadPoolSize(Network *net, int num_threads);
+	11. fit_cnn(Network *net, int num_samples, int height, int width, int channels, double *x_train_flat, double *y_train_flat, int num_classes, int epochs, double learning_rate); // Train CNNs with flat CHW input buffers
  
 ### To Do:
   	1. Adam Optimizer
    	2. Regularization / Dropout
+
+## Quick usage bullets
+- Build: `gcc net.c -O2 -lm -pthread -o net` (or use the debug build: `-g -O0`).
+- Run the demo: `./net` will run the CNN demo and a small FC baseline.
+- Data layout for images used by `fit_cnn` and conv layers: per-sample flat buffer in CHW order (channels, then height, then width). For MNIST use `channels=1`, `height=28`, `width=28` and cast your `double images[N][28][28]` to `(double*)` when calling `fit_cnn`.
+- Labels: one-hot vectors per sample (length = number of classes).
+- Thread pool sizing: call `setThreadPoolSize(net, n)` before training to configure parallelism.
+- Memory: some layer outputs are allocated per-forward/backward pass and freed after backprop; ensure you call `destroyNetwork(net)` when done to free weights.
+- Troubleshooting: enable a debug build (`-g -O0`) and run under lldb/valgrind/ASAN if you see crashes or NaNs during training.
 
