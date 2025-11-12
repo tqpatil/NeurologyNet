@@ -1,7 +1,15 @@
 # Neurology
+
+![image](https://github.com/tqpatil/NeurologyNet/assets/34226808/f0eb27d6-c078-46a3-9c05-334c166c4df7)
+
 <img width="380" alt="image" src="https://github.com/tqpatil/NeurologyNet/assets/34226808/79ffe2f7-d055-416e-ac4c-d2653456e8d4">
 
 Creating an infrastructure for building neural nets fully in C.
+
+## Features
+- Multi-threaded training with configurable thread pool
+- Parallelized layer computations (FC, Conv, Activation, MaxPool, Softmax)
+
 ## Layer types
 - Fully Connected (FC) Layer
 	Params: 
@@ -58,6 +66,4 @@ Creating an infrastructure for building neural nets fully in C.
 ### To Do:
   	1. Adam Optimizer
    	2. Regularization / Dropout
-
-![image](https://github.com/tqpatil/NeurologyNet/assets/34226808/f0eb27d6-c078-46a3-9c05-334c166c4df7)
 
