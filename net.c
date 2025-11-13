@@ -20,6 +20,7 @@ typedef struct {
 	int out_h; 
 	int out_w; 
 } ConvForTask;
+// compute single filter output in convolution forward pass
 static void conv_forprop_task_fn(void *arg) {
 	ConvForTask *t = (ConvForTask*)arg;
 	Layer *ly = t->layer;
@@ -64,6 +65,7 @@ typedef struct {
 	double ***output_error; 
 	double ***input_error;
 } ConvInputTask;
+// format convolution input with padding into 3d working array
 static void conv_input_task_fn(void *arg) {
 	ConvInputTask *t = (ConvInputTask*)arg;
 	Layer *ly = t->layer;
@@ -85,7 +87,17 @@ static void conv_input_task_fn(void *arg) {
 	free(t);
 }
 
-typedef struct { Layer *layer; int f; int out_h; int out_w; int in_h; int in_w; double learning_rate; double ***output_error; } ConvBackTask;
+typedef struct { 
+	Layer *layer; 
+	int f; 
+	int out_h; 
+	int out_w; 
+	int in_h; 
+	int in_w; 
+	double learning_rate; 
+	double ***output_error; 
+} ConvBackTask;
+// compute filter gradients and propagate error for single filter in backprop
 static void conv_back_task_fn(void *arg) {
 	ConvBackTask *t = (ConvBackTask*)arg;
 	Layer *ly = t->layer;
@@ -99,8 +111,7 @@ static void conv_back_task_fn(void *arg) {
 						int ih = h * ly->stride + kh;
 						int iw = w * ly->stride + kw;
 						// layer->input was set to point to the original 3D input
-						// (stored as an opaque pointer). Cast back to double***
-						// and index by [channel][row][col].
+						// (stored as an opaque pointer). Cast back to double*** and index by [channel][row][col]
 						double ***input_3d = (double***)ly->input;
 						if (ly->padding > 0) {
 							int orig_ih = ih - ly->padding;
@@ -127,6 +138,7 @@ typedef struct {
 	int start; 
 	int end; 
 } FCForTask;
+// compute subset of fully connected layer outputs
 static void fc_forprop_task_fn(void *arg) {
 	FCForTask *t = (FCForTask*)arg;
 	for (int col =t->start; col < t->end; ++col) {
@@ -145,6 +157,7 @@ typedef struct {
 	double *output_error; 
 	double *dest; 
 } InputErrTask;
+// compute input error portion for fully connected layer during backprop
 static void input_err_task_fn(void *arg) {
 	InputErrTask *t = (InputErrTask*)arg;
 	for (int i = t->start; i < t->end; ++i) {
@@ -157,7 +170,15 @@ static void input_err_task_fn(void *arg) {
 	free(t);
 }
 
-typedef struct { Layer *layer; int start_col; int end_col; double *input_vec; double *output_err; double lr; } WeightUpdTask;
+typedef struct { 
+	Layer *layer; 
+	int start_col; 
+	int end_col; 
+	double *input_vec; 
+	double *output_err; 
+	double lr; 
+} WeightUpdTask;
+// update weights and biases for subset of fc layer neurons
 static void weight_upd_task_fn(void *arg) {
 	WeightUpdTask *t = (WeightUpdTask*)arg;
 	for (int j = t->start_col; j < t->end_col; ++j) {
@@ -169,14 +190,27 @@ static void weight_upd_task_fn(void *arg) {
 	free(t);
 }
 
-typedef struct { Layer *layer; double *in; double *out; int start; int len; } ActTask;
+typedef struct { 
+	Layer *layer; 
+	double *in; 
+	double *out; 
+	int start; 
+	int len; 
+} ActTask;
+// apply activation function to subset of elements
 static void act_task_fn(void *arg) {
 	ActTask *t = (ActTask*)arg;
 	t->layer->Activation(t->in + t->start, t->len, t->out + t->start);
 	free(t);
 }
 
-typedef struct { Layer *layer; double *in; double *out_err; int start; int len; } ActBackTask;
+typedef struct { Layer *layer; 
+	double *in; 
+	double *out_err;
+	int start; 
+	int len; 
+} ActBackTask;
+// propagate error through activation derivative for subset of elements
 static void act_back_task_fn(void *arg) {
 	ActBackTask *t = (ActBackTask*)arg;
 	double *buf = malloc(t->len * sizeof(double));
@@ -188,7 +222,20 @@ static void act_back_task_fn(void *arg) {
 	free(t);
 }
 
-typedef struct { double *input_data; double *output; int *mask; int channel; int in_h; int in_w; int out_h; int out_w; int pool_h; int pool_w; int stride; } MaxPoolTask;
+typedef struct { 
+	double *input_data; 
+	double *output; 
+	int *mask; 
+	int channel; 
+	int in_h; 
+	int in_w; 
+	int out_h; 
+	int out_w; 
+	int pool_h; 
+	int pool_w; 
+	int stride; 
+} MaxPoolTask;
+// compute max pooling for single channel forward pass
 static void maxpool_task_fn(void *arg) {
 	MaxPoolTask *t = (MaxPoolTask*)arg;
 	int c = t->channel;
@@ -215,7 +262,14 @@ static void maxpool_task_fn(void *arg) {
 	free(t);
 }
 
-typedef struct { int *mask; double *out_err; double *dest; int start; int end; } MaxPoolBackTask;
+typedef struct { 
+	int *mask; 
+	double *out_err; 
+	double *dest; 
+	int start; 
+	int end; 
+} MaxPoolBackTask;
+// propagate max pool error gradient to input positions for single channel
 static void maxpool_back_task_fn(void *arg) {
 	MaxPoolBackTask *t = (MaxPoolBackTask*)arg;
 	for (int i = t->start; i < t->end; ++i) {
@@ -239,6 +293,7 @@ static double* maxpool_backprop(Layer *layer, double *output_error, double learn
 static double* Conv_forward_wrapper(Layer *layer, double *input_data);
 static double* Conv_backward_wrapper(Layer *layer, double *output_error, double learning_rate);
 
+// compute mean squared error loss
 double mean_squared_error(double* expected, double* result, int array_length) {
 	double error = 0.0;
 	for (int i = 0; i < array_length; ++i) {
@@ -248,13 +303,21 @@ double mean_squared_error(double* expected, double* result, int array_length) {
 	return error / array_length;
 }
 
+// compute mse gradient with respect to output
 void mean_squared_prime(double* expected, double* result, int array_length, double *output) {
 	for (int i = 0; i < array_length; ++i) {
 		output[i] = (2.0 * (expected[i] - result[i])) / array_length;
 	}
 }
 
-typedef struct { double *logits; double *out_buf; int start; int len; double *partial_sum; } SoftmaxExpTask;
+typedef struct { 
+	double *logits; 
+	double *out_buf; 
+	int start; 
+	int len; 
+	double *partial_sum; 
+} SoftmaxExpTask;
+// compute exponential and sum for softmax of subset of elements
 static void softmax_exp_task_fn(void *arg) {
 	SoftmaxExpTask *t = (SoftmaxExpTask*)arg;
 	double local_sum =0.0;
@@ -270,7 +333,15 @@ static void softmax_exp_task_fn(void *arg) {
 	free(t);
 }
 
-typedef struct { double *logits_or_probs; double *expected; int start; int len; int total_len; double *out_grad; } SoftmaxGradTask;
+typedef struct { 
+	double *logits_or_probs; 
+	double *expected; 
+	int start; 
+	int len; 
+	int total_len; 
+	double *out_grad; 
+} SoftmaxGradTask;
+// compute softmax gradient for subset of elements
 static void softmax_grad_task_fn(void *arg) {
 	SoftmaxGradTask *t = (SoftmaxGradTask*)arg;
 	for (int i = 0; i < t->len; ++i) {
@@ -280,6 +351,7 @@ static void softmax_grad_task_fn(void *arg) {
 	free(t);
 }
 
+// compute cross entropy loss with numerical stability
 double cross_entropy_loss(double* expected, double* logits, int array_length) {
 	if (!logits || !expected || array_length <= 0) return 0.0;
 	double maxv = logits[0];
@@ -360,6 +432,7 @@ double cross_entropy_loss(double* expected, double* logits, int array_length) {
 	return loss / array_length;
 }
 
+// compute cross entropy gradient with respect to output
 void cross_entropy_prime(double* expected, double* logits, int array_length, double *output) {
 	if (!expected || !logits || !output || array_length <= 0){
 		return;
@@ -406,24 +479,28 @@ void cross_entropy_prime(double* expected, double* logits, int array_length, dou
 	free(probs);
 }
 
+// apply relu activation function element-wise
 void relu_activation(double *input, int input_size, double *result) {
 	for (int i = 0; i < input_size; ++i) {
 		result[i] = input[i] > 0.0 ? input[i] : 0.0;
 	}
 }
 
+// compute relu derivative element-wise
 void relu_p(double *input, int input_size, double *result) {
 	for (int i = 0; i < input_size; ++i) {
 		result[i] = input[i] > 0.0 ? 1.0 : 0.0;
 	}
 }
 
+// apply tanh activation function element-wise
 void tanh_activation(double *input, int input_size, double *result) {
 	for (int i = 0; i < input_size; ++i) {
 		result[i] = tanh(input[i]);
 	}
 }
 
+// compute tanh derivative element-wise
 void tanh_p(double *input, int input_size, double *result) {
 	for (int i = 0; i < input_size; ++i) {
 		double t = tanh(input[i]);
@@ -431,6 +508,7 @@ void tanh_p(double *input, int input_size, double *result) {
 	}
 }
 
+// worker thread that processes task queue
 static void* worker_thread(void *arg) {
 	ThreadPool *pool = (ThreadPool *)arg;
 	
@@ -480,6 +558,7 @@ static void thread_pool_enqueue(ThreadPool *pool, void (*task)(void*), void *arg
 	pthread_mutex_unlock(&pool->lock);
 }
 
+// wait for all enqueued tasks to complete
 static void thread_pool_wait(ThreadPool *pool) {
 	if (!pool) {
 		return;
@@ -491,6 +570,7 @@ static void thread_pool_wait(ThreadPool *pool) {
 	pthread_mutex_unlock(&pool->lock);
 }
 
+// initialize thread pool with specified number of worker threads
 static ThreadPool* thread_pool_create(int num_threads) {
 	if (num_threads <= 0){
 		return NULL;
@@ -531,6 +611,7 @@ static ThreadPool* thread_pool_create(int num_threads) {
 	return pool;
 }
 
+// shutdown and free thread pool resources
 static void thread_pool_destroy(ThreadPool *pool) {
 	if (!pool) {
 		return;
@@ -551,6 +632,7 @@ static void thread_pool_destroy(ThreadPool *pool) {
 	free(pool);
 }
 
+// create and initialize empty network with loss function
 Network* initNetwork(loss Loss, loss_prime Loss_prime) {
 	Network *net = malloc(sizeof(*net));
 	if (!net) {
@@ -567,6 +649,7 @@ Network* initNetwork(loss Loss, loss_prime Loss_prime) {
 	return net;
 }
 
+// append layer to end of network
 void addLayer(Network *net, Layer* layer) {
 	if (!net || !layer) {
 		return;
@@ -584,6 +667,7 @@ void addLayer(Network *net, Layer* layer) {
 	net->num_layers++;
 }
 
+// reconfigure thread pool worker thread count
 void setThreadPoolSize(Network* net, int num_threads) {
 	if (!net || num_threads <= 0) {
 		return;
@@ -596,6 +680,7 @@ void setThreadPoolSize(Network* net, int num_threads) {
 	g_pool = net->thread_pool;
 }
 
+// forward propagate samples through network and return predictions
 double** predict(Network *net, int num_samples, int sample_size, double input_data[num_samples][sample_size]) {
 	if (!net || !net->head || !net->tail) {
 		return NULL;
@@ -642,6 +727,7 @@ double** predict(Network *net, int num_samples, int sample_size, double input_da
 	return result;
 }
 
+// train fully connected network on 2d array data
 void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, double x_train[num_samples][sample_size], double y_train[num_samples][sizeOfOutput], int epochs, double learning_rate) {
 	if (!net || !net->head || !net->tail) {
 		return;
@@ -675,7 +761,6 @@ void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, doubl
 				e = next_e;
 				curr = curr->prev;
 			}
-			// Make sure grad points to the latest buffer returned by backprop
 			grad = e;
 
 			// Free allocated buffers from forward/backward pass
@@ -683,8 +768,6 @@ void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, doubl
 			// Only free layer->output which are intermediate allocations
 			curr = net->head;
 			while (curr) {
-				// Skip freeing input - it's owned by the caller or previous layer
-				// Free output from all layers
 				if (curr->output) {
 					free(curr->output);
 					curr->output = NULL;
@@ -701,6 +784,7 @@ void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, doubl
 	free(grad);
 }
 
+// create activation layer
 Layer* initActivation(activation a, activation_p ap, int input_size) {
 	Layer *layer = malloc(sizeof(*layer));
 	if (!layer) {
@@ -718,6 +802,7 @@ Layer* initActivation(activation a, activation_p ap, int input_size) {
 	return layer;
 }
 
+// create 2d convolutional layer
 Layer* initConv2D(int num_filters, int filter_rows, int filter_cols, int num_channels, int stride, int padding) {
 	Layer *layer = malloc(sizeof(*layer));
 	if (!layer) {
@@ -744,61 +829,66 @@ Layer* initConv2D(int num_filters, int filter_rows, int filter_cols, int num_cha
 		return NULL;
 	}
 
-	for (int i = 0; i < num_filters; ++i) {
+	int success = 1;
+	for (int i=0; i <num_filters && success; ++i) {
 		layer->convFilters[i] = malloc(sizeof(double**) * filter_rows);
 		if (!layer->convFilters[i]) {
-			goto conv_alloc_fail;
+			success = 0;
 		}
-
-		for (int r = 0; r < filter_rows; ++r) {
-			layer->convFilters[i][r] = malloc(sizeof(double*) * filter_cols);
-			if (!layer->convFilters[i][r]) {
-				goto conv_alloc_fail;
-			}
-
-			for (int c = 0; c < filter_cols; ++c) {
-				layer->convFilters[i][r][c] = malloc(sizeof(double) * num_channels);
-				if (!layer->convFilters[i][r][c]) {
-					goto conv_alloc_fail;
+		else {
+			for (int r=0; r<filter_rows && success; ++r) {
+				layer->convFilters[i][r] = malloc(sizeof(double*) * filter_cols);
+				if (!layer->convFilters[i][r]) {
+					success = 0;
 				}
-
-				for (int ch = 0; ch < num_channels; ++ch) {
-					double b = sqrt(6.0) / sqrt(4.0 + 4.0);
-					double a = -b;
-					double random_double = a + (((double)rand() / RAND_MAX) * (b - a));
-					layer->convFilters[i][r][c][ch] = random_double;
+				else {
+					for (int c=0; c<filter_cols && success; ++c) {
+						layer->convFilters[i][r][c] = malloc(sizeof(double) * num_channels);
+						if (!layer->convFilters[i][r][c]) {
+							success = 0;
+						}
+						else {
+							for (int ch=0; ch<num_channels; ++ch) {
+								double b = sqrt(6.0) / sqrt(4.0 + 4.0);
+								double a = -b;
+								double random_double = a + (((double)rand() / RAND_MAX) * (b - a));
+								layer->convFilters[i][r][c][ch] = random_double;
+							}
+						}
+					}
 				}
 			}
 		}
 	}
 
-	// Use small wrapper functions that match the forward_prop/backward_prop signatures (double*)
+	if (!success) {
+		for (int ii=0; ii<num_filters; ++ii) {
+			if (!layer->convFilters[ii]) {
+				break;
+			}
+			for (int rr=0; rr<filter_rows; ++rr) {
+				if (!layer->convFilters[ii][rr]) {
+					break;
+				}
+				for (int cc=0; cc<filter_cols; ++cc) {
+					free(layer->convFilters[ii][rr][cc]);
+				}
+				free(layer->convFilters[ii][rr]);
+			}
+			free(layer->convFilters[ii]);
+		}
+		free(layer->convFilters);
+		free(layer);
+		return NULL;
+	}
+
 	layer->forward_prop = Conv_forward_wrapper;
 	layer->backward_prop = Conv_backward_wrapper;
 
 	return layer;
-
-conv_alloc_fail: // goto usage (lol sorry)
-	for (int ii = 0; ii < num_filters; ++ii) {
-		if (!layer->convFilters[ii]) {
-			continue;
-		}
-		for (int rr = 0; rr < filter_rows; ++rr) {
-			if (!layer->convFilters[ii][rr]) {
-				continue;
-			}
-			for (int cc = 0; cc < filter_cols; ++cc) {
-				free(layer->convFilters[ii][rr][cc]);
-			}
-			free(layer->convFilters[ii][rr]);
-		}
-		free(layer->convFilters[ii]);
-	}
-	free(layer->convFilters);
-	free(layer);
-	return NULL;
 }
 
+// create fully connected layer
 Layer* initFC(int input_size, int output_size) {
 	Layer* layer = malloc(sizeof(*layer));
 	if (!layer) {
@@ -813,7 +903,7 @@ Layer* initFC(int input_size, int output_size) {
 		return NULL;
 	}
 
-	// Initialize bias to small positive value to help with ReLU
+	// Initialize bias to small positive value to help with ReLU stability
 	for (int i = 0; i < output_size; ++i) {
 		layer->bias[i] = 0.1;
 	}
@@ -852,6 +942,7 @@ Layer* initFC(int input_size, int output_size) {
 	return layer;
 }
 
+// create flatten layer
 Layer* initFlatten(int num_filters, int height, int width) {
 	Layer *layer = malloc(sizeof(*layer));
 	if (!layer) {
@@ -873,6 +964,7 @@ Layer* initFlatten(int num_filters, int height, int width) {
 	return layer;
 }
 
+// create max pooling layer
 Layer* initMaxPool(int num_channels, int input_height, int input_width, int pool_rows, int pool_cols, int stride) {
 	Layer *layer = malloc(sizeof(*layer));
 	if (!layer){
@@ -884,8 +976,8 @@ Layer* initMaxPool(int num_channels, int input_height, int input_width, int pool
 	layer->filter_cols = pool_cols;
 	layer->input_height = input_height;
 	layer->input_width = input_width;
-	int out_h = (input_height-pool_rows) / stride + 1;
-	int out_w = (input_width-pool_cols) / stride + 1;
+	int out_h = (input_height-pool_rows)/stride + 1;
+	int out_w =(input_width-pool_cols)/stride + 1;
 	layer->output_size = num_channels * out_h * out_w;
 	layer->stride = stride;
 	layer->padding = 0;
@@ -897,6 +989,7 @@ Layer* initMaxPool(int num_channels, int input_height, int input_width, int pool
 	return layer;
 }
 
+// compute convolution forward pass producing 3d output
 static double*** Conv_forprop(Layer *layer, double ***input_data) {
 	int input_height = 28;
 	int input_width = 28;
@@ -937,7 +1030,7 @@ static double*** Conv_forprop(Layer *layer, double ***input_data) {
 	if (layer->padding > 0) {
 		int padded_height = input_height + 2 * layer->padding;
 		int padded_width = input_width + 2 * layer->padding;
-		padded_input = malloc(layer->channels * sizeof(double**));
+		padded_input = malloc(layer->channels*sizeof(double**));
 		for (int c = 0; c < layer->channels; ++c) {
 			padded_input[c] = malloc(padded_height * sizeof(double*));
 			for (int h = 0; h < padded_height; ++h) {
@@ -994,7 +1087,7 @@ static double*** Conv_forprop(Layer *layer, double ***input_data) {
 	if (padded_input) {
 		int padded_height = input_height + 2 * layer->padding;
 		int padded_width = input_width + 2 * layer->padding;
-		for (int c=0; c<layer->channels; ++c) {
+		for (int c=0; c < layer->channels; ++c) {
 			for (int h = 0; h < padded_height; ++h) {
 				free(padded_input[c][h]);
 			}
@@ -1007,6 +1100,7 @@ static double*** Conv_forprop(Layer *layer, double ***input_data) {
 	return output;
 }
 
+// compute convolution backward pass and update filter weights
 static double*** Conv_backprop(Layer *layer, double***output_error, double learning_rate) {
 	int input_height = 28;
 	int input_width = 28;
@@ -1059,7 +1153,7 @@ static double*** Conv_backprop(Layer *layer, double***output_error, double learn
 				for (int w = 0; w < output_width; ++w) {
 					double error_val = output_error[f][h][w];
 					for (int c = 0; c < layer->channels; ++c) {
-						for (int kh = 0; kh < layer->filter_rows; ++kh) {
+						for (int kh= 0; kh < layer->filter_rows; ++kh) {
 							for (int kw = 0; kw < layer->filter_cols; ++kw) {
 								int ih = h * layer->stride+kh;
 								int iw = w * layer->stride+kw;
@@ -1127,6 +1221,7 @@ static double*** Conv_backprop(Layer *layer, double***output_error, double learn
 	return output;
 }
 
+// apply activation function forward pass
 static double* activation_forprop(Layer *layer, double *input_data) {
 	if (!layer) {
 		return NULL;
@@ -1143,7 +1238,7 @@ static double* activation_forprop(Layer *layer, double *input_data) {
 	}
 	int chunk = (layer->input_size + g_pool->num_threads - 1) / g_pool->num_threads;
 	if (chunk < 1) chunk = 1;
-	for (int s = 0; s < layer->input_size; s += chunk) {
+	for (int s=0; s<layer->input_size; s+=chunk) {
 		int len = chunk;
 		if (s + len > layer->input_size){
 			len = layer->input_size - s;
@@ -1157,6 +1252,7 @@ static double* activation_forprop(Layer *layer, double *input_data) {
 	return result;
 }
 
+// propagate error through activation derivative backward pass
 static double* activation_backprop(Layer *layer, double *output_error, double learning_rate) {
 	(void)learning_rate;
 	double *result = malloc(layer->input_size * sizeof(double));
@@ -1175,7 +1271,7 @@ static double* activation_backprop(Layer *layer, double *output_error, double le
 	if (chunk < 1) {
 		chunk = 1;
 	}
-	for (int s = 0; s < layer->input_size; s += chunk) {
+	for (int s=0; s<layer->input_size; s+=chunk) {
 		int len = chunk;
 		if (s + len > layer->input_size){
 			len = layer->input_size - s;
@@ -1190,13 +1286,14 @@ static double* activation_backprop(Layer *layer, double *output_error, double le
 	}
 	thread_pool_wait(g_pool);
 	// CRITICAL FIX: The tasks above update output_error in place. Copy it to result.
-	for (int i = 0; i < layer->input_size; ++i) {
+	for (int i=0; i<layer->input_size; ++i) {
 		result[i] = output_error[i];
 	} 
 	free(output_error);
 	return result;
 }
 
+// compute fully connected layer forward pass
 static double* FC_forprop(Layer *layer, double *input_data) {
 	double *result = malloc(layer->output_size*sizeof(double));
 	if (!result){
@@ -1234,6 +1331,7 @@ static double* FC_forprop(Layer *layer, double *input_data) {
 	return result;
 }
 
+// compute fully connected layer backward pass
 static double* FC_backprop(Layer *layer, double *output_error, double learning_rate) {
 	double *input_error = malloc(layer->input_size * sizeof(double));
 	if (!input_error) return NULL;
@@ -1293,6 +1391,7 @@ static double* FC_backprop(Layer *layer, double *output_error, double learning_r
 	return interim;
 }
 
+// reshape multi-channel 3d input to flat 1d vector
 static double* flatten_forprop(Layer *layer, double *input_data) {
 	double *result = malloc(layer->output_size * sizeof(double));
 	if (!result) {
@@ -1318,6 +1417,7 @@ static double* flatten_forprop(Layer *layer, double *input_data) {
 	return result;
 }
 
+// reshape flat error back to multi-channel 3d format
 static double* flatten_backprop(Layer *layer, double *output_error, double learning_rate) {
 	(void)learning_rate;
 
@@ -1346,6 +1446,7 @@ static double* flatten_backprop(Layer *layer, double *output_error, double learn
 	return (double*)output;
 }
 
+// compute max pooling forward pass with mask for backprop
 static double* maxpool_forprop(Layer *layer, double *input_data) {
 	int channels = layer->channels;
 	int in_h = layer->input_height;
@@ -1397,6 +1498,7 @@ static double* maxpool_forprop(Layer *layer, double *input_data) {
 	return output;
 }
 
+// propagate max pool error back using stored mask
 static double* maxpool_backprop(Layer *layer, double *output_error, double learning_rate) {
 	(void)learning_rate;
 	int in_size = layer->input_size;
@@ -1437,6 +1539,7 @@ typedef struct {
 	double learning_rate;
 } ForwardPassJob;
 
+// free all network layers and thread pool
 void destroyNetwork(Network *net) {
 	if (!net) {
 		return;
@@ -1480,6 +1583,7 @@ void destroyNetwork(Network *net) {
 	free(net);
 }
 
+// toggle network visualization output
 void enableVisualizer(Network *net, int flag) {
 	if (!net) {
 		return;
@@ -1497,6 +1601,7 @@ void reshapeImages(uint8_t *flatData, double (*reshapedData)[NUM_IMAGES][28][28]
 	}
 }
 
+// swap byte order for big-endian to little-endian conversion
 int reverseInt (int i) {
 	unsigned char c1, c2, c3, c4;
 	c1 = i & 255;
@@ -1535,6 +1640,7 @@ double (*load_mnist_images(const char *path, int *num_images))[28][28] {
 	return images;
 }
 
+// read mnist label file and return as array
 double *load_mnist_labels(const char *path, int *num_labels) {
 	FILE *file = fopen(path, "rb");
 	if (!file) {
@@ -1555,6 +1661,7 @@ double *load_mnist_labels(const char *path, int *num_labels) {
 	return labels;
 }
 
+// convert flat 1d array to 3d channel-height-width format
 double*** flat_to_3d(double *flat_img, int channels, int height, int width) {
 	double ***img_3d = malloc(channels * sizeof(double**));
 	if (!img_3d) {
@@ -1593,6 +1700,7 @@ double*** flat_to_3d(double *flat_img, int channels, int height, int width) {
 	return img_3d;
 }
 
+// free 3d array structure
 void free_3d(double ***img_3d, int channels, int height) {
 	if (!img_3d) return;
 	for (int c=0; c<channels; ++c) {
@@ -1610,19 +1718,21 @@ void free_3d(double ***img_3d, int channels, int height) {
 }
 
 // Conv wrapper definitions: call the conv implementations which use double*** but expose forward/back props as double* to work with Layer struct 
+// adapt 3d conv forward pass to generic layer forward interface
 static double* Conv_forward_wrapper(Layer *layer, double *input_data) {
 	double ***in3d = (double***) input_data;
 	double ***out3d = Conv_forprop(layer,in3d);
 	return (double*) out3d;
 }
 
+// adapt 3d conv backward pass to generic layer backward interface
 static double* Conv_backward_wrapper(Layer *layer, double *output_error, double learning_rate) {
 	double ***err3d = (double***)output_error;
 	double ***inerr3d = Conv_backprop(layer, err3d, learning_rate);
 	return (double*)inerr3d;
 }
 
-/* Demo: train a CNN-style network where inputs are 28x28 images (single channel), 10 output classes */
+// train cnn network on flat image data with per-sample normalization and one-hot labels
 static void fit_cnn(Network *net, int num_samples, int height, int width, int channels, double *x_train_flat, double *y_train_flat, int num_classes, int epochs, double learning_rate) {
 	if (!net || !net->head || !net->tail) {
 		return;
@@ -1704,6 +1814,7 @@ static void fit_cnn(Network *net, int num_samples, int height, int width, int ch
 	}
 }
 
+// main entry point for mnist training and testing
 int main(void) {
 	srand((unsigned)time(NULL)); // Random seed for weight initialization
 

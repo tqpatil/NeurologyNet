@@ -61,7 +61,8 @@ void setThreadPoolSize(Network* net, int num_threads);
 void addLayer(Network* net, Layer* layer);
 double** predict(Network *net, int num_samples, int sample_size, double input_data[num_samples][sample_size]);
 void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, double x_train[num_samples][sample_size], double y_train[num_samples][sizeOfOutput], int epochs, double learning_rate);
-void enableVisualizer(Network* net, int flag);struct Layer {
+void enableVisualizer(Network* net, int flag);
+struct Layer {
     double **weights;
     double *bias;
     double *input;
