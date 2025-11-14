@@ -31,7 +31,6 @@ static void conv_forprop_task_fn(void *arg) {
 		return;
 	}
 	if (t->f == 0) {
-		// print once per task batch for the first filter to reduce noise
 		// fprintf(stderr, "[conv_forprop_task_fn] layer=%p num_filters=%d filter_rows=%d filter_cols=%d channels=%d stride=%d padding=%d active_input=%p\n",
 		//         (void*)ly, ly->num_filters, ly->filter_rows, ly->filter_cols, ly->channels, ly->stride, ly->padding, (void*)t->active_input);
 		// if (t->active_input[0] && t->active_input[0][0])
@@ -110,7 +109,6 @@ static void conv_back_task_fn(void *arg) {
 					for (int kw = 0; kw < ly->filter_cols; ++kw) {
 						int ih = h * ly->stride + kh;
 						int iw = w * ly->stride + kw;
-						// layer->input was set to point to the original 3D input
 						// (stored as an opaque pointer). Cast back to double*** and index by [channel][row][col]
 						double ***input_3d = (double***)ly->input;
 						if (ly->padding > 0) {
@@ -353,10 +351,15 @@ static void softmax_grad_task_fn(void *arg) {
 
 // compute cross entropy loss with numerical stability
 double cross_entropy_loss(double* expected, double* logits, int array_length) {
-	if (!logits || !expected || array_length <= 0) return 0.0;
+	if (!logits || !expected || array_length <= 0) {
+		return 0.0;
+	} 
 	double maxv = logits[0];
-	for (int i = 1; i < array_length; ++i)
-		if (logits[i] > maxv) maxv = logits[i];
+	for (int i = 1; i < array_length; ++i) {
+		if (logits[i] > maxv) {
+			maxv = logits[i];
+		} 
+	}
 
 	double *exp_buf = malloc(array_length * sizeof(double));
 	double *logits_copy = malloc(array_length * sizeof(double));
@@ -767,11 +770,9 @@ void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, doubl
 			// Do NOT free layer->input as it points to data used during forward pass
 			// Only free layer->output which are intermediate allocations
 			curr = net->head;
+			curr = net->head;
 			while (curr) {
-				if (curr->output) {
-					free(curr->output);
-					curr->output = NULL;
-				}
+				curr->output = NULL;
 				curr->input = NULL;
 				curr = curr->next;
 			}
@@ -991,8 +992,8 @@ Layer* initMaxPool(int num_channels, int input_height, int input_width, int pool
 
 // compute convolution forward pass producing 3d output
 static double*** Conv_forprop(Layer *layer, double ***input_data) {
-	int input_height = 28;
-	int input_width = 28;
+	int input_height = layer->input_height > 0 ? layer->input_height : 28;
+	int input_width = layer->input_width > 0 ? layer->input_width : 28;
 	int output_height = (input_height + 2 * layer->padding - layer->filter_rows) / layer->stride + 1;
 	int output_width = (input_width + 2 * layer->padding - layer->filter_cols) / layer->stride + 1;
 
@@ -1102,8 +1103,8 @@ static double*** Conv_forprop(Layer *layer, double ***input_data) {
 
 // compute convolution backward pass and update filter weights
 static double*** Conv_backprop(Layer *layer, double***output_error, double learning_rate) {
-	int input_height = 28;
-	int input_width = 28;
+	int input_height = layer->input_height > 0 ? layer->input_height : 28;
+	int input_width = layer->input_width > 0 ? layer->input_width : 28;
 	int output_height = (input_height +2 * layer->padding - layer->filter_rows) / layer->stride + 1;
 	int output_width = (input_width + 2 * layer->padding - layer->filter_cols) / layer->stride + 1;
 
@@ -1216,6 +1217,8 @@ static double*** Conv_backprop(Layer *layer, double***output_error, double learn
 		}
 		free(output_error[f]);
 	}
+	// mark layer output as consumed to avoid double-free
+	layer->output = NULL;
 	free(output_error);
 
 	return output;
@@ -1397,11 +1400,9 @@ static double* flatten_forprop(Layer *layer, double *input_data) {
 	if (!result) {
 		return NULL;
 	}
-
 	int height = layer->filter_rows;
 	int width = layer->filter_cols;
 	int channels = layer->num_filters;
-
 	double ***input_3d = (double***)input_data;
 	int idx = 0;
 	for (int c = 0; c < channels; ++c) {
@@ -1411,7 +1412,7 @@ static double* flatten_forprop(Layer *layer, double *input_data) {
 			}
 		}
 	}
-
+    
 	layer->input = input_data;
 	layer->output = result;
 	return result;
@@ -1424,12 +1425,24 @@ static double* flatten_backprop(Layer *layer, double *output_error, double learn
 	int height = layer->filter_rows;
 	int width = layer->filter_cols;
 	int channels = layer->num_filters;
-
 	double ***output = malloc(channels * sizeof(double**));
-	for (int c = 0; c < channels; ++c) {
+	if (!output) {
+		printf("[Flatten_back] ERROR: malloc failed for output array\n");
+		return NULL;
+	}
+
+	for (int c=0; c<channels; ++c) {
 		output[c] = malloc(height * sizeof(double*));
-		for (int h = 0; h < height; ++h) {
+		if (!output[c]) {
+			printf("[Flatten_back] ERROR: malloc failed for channel %d\n", c);
+			return NULL;
+		}
+		for (int h=0; h<height; ++h) {
 			output[c][h] = malloc(width * sizeof(double));
+			if (!output[c][h]) {
+				printf("[Flatten_back] ERROR: malloc failed for channel %d row %d\n", c, h);
+				return NULL;
+			}
 		}
 	}
 
@@ -1456,14 +1469,21 @@ static double* maxpool_forprop(Layer *layer, double *input_data) {
 	int stride = layer->stride;
 	int out_h = (in_h - pool_h) / stride + 1;
 	int out_w = (in_w - pool_w) / stride + 1;
+	
 	double *output = malloc(layer->output_size * sizeof(double));
 	if (!output) {
+		printf("[MaxPool] ERROR: Failed to allocate output\n");
 		return NULL;
 	}
 	int *mask = malloc(layer->output_size * sizeof(int));
 	if (!mask) {
-		free(output); return NULL; 
+		printf("[MaxPool] ERROR: Failed to allocate mask\n");
+		free(output); 
+		return NULL; 
 	}
+	
+
+
 	if (!g_pool) {
 		for (int c = 0; c < channels; ++c) {
 			for (int oh = 0; oh < out_h; ++oh) {
@@ -1476,7 +1496,10 @@ static double* maxpool_forprop(Layer *layer, double *input_data) {
 							int iw = ow * stride + pw;
 							int idx = c * (in_h * in_w) + ih * in_w + iw;
 							double val = input_data[idx];
-							if (val > best) { best = val; best_idx = idx; }
+							if (val > best) {
+								best = val;
+								best_idx = idx;
+							}
 						}
 					}
 					int out_index = c * (out_h * out_w) + oh * out_w + ow;
@@ -1488,11 +1511,22 @@ static double* maxpool_forprop(Layer *layer, double *input_data) {
 	} else {
 		for (int c = 0; c < channels; ++c) {
 			MaxPoolTask *t = malloc(sizeof(MaxPoolTask));
-			t->input_data = input_data; t->output = output; t->mask = mask; t->channel = c; t->in_h = in_h; t->in_w = in_w; t->out_h = out_h; t->out_w = out_w; t->pool_h = pool_h; t->pool_w = pool_w; t->stride = stride;
+			t->input_data = input_data;
+			t->output = output;
+			t->mask = mask;
+			t->channel = c;
+			t->in_h = in_h;
+			t->in_w = in_w;
+			t->out_h = out_h;
+			t->out_w = out_w;
+			t->pool_h = pool_h;
+			t->pool_w = pool_w;
+			t->stride = stride;
 			thread_pool_enqueue(g_pool, maxpool_task_fn, t);
 		}
 		thread_pool_wait(g_pool);
 	}
+	
 	layer->input = (double*)mask;
 	layer->output = output;
 	return output;
@@ -1718,17 +1752,92 @@ void free_3d(double ***img_3d, int channels, int height) {
 }
 
 // Conv wrapper definitions: call the conv implementations which use double*** but expose forward/back props as double* to work with Layer struct 
-// adapt 3d conv forward pass to generic layer forward interface
 static double* Conv_forward_wrapper(Layer *layer, double *input_data) {
 	double ***in3d = (double***) input_data;
-	double ***out3d = Conv_forprop(layer,in3d);
-	return (double*) out3d;
+	double ***out3d = Conv_forprop(layer, in3d);
+	if (!out3d){
+		return NULL;
+	}
+
+	int input_height = layer->input_height > 0 ? layer->input_height : 28;
+	int input_width =layer->input_width > 0 ? layer->input_width : 28;
+	int out_h = (input_height + 2 * layer->padding - layer->filter_rows)/layer->stride + 1;
+	int out_w = (input_width + 2 * layer->padding - layer->filter_cols)/layer->stride + 1;
+	int num_filters = layer->num_filters;
+
+	// flatten 3D output into contiguous double array for downstream layers (e.g., activations, FC)
+	int flat_size = num_filters * out_h * out_w;
+	double *flat_out = malloc(flat_size * sizeof(double));
+	if (!flat_out) {
+		// free the 3d structure
+		for (int f = 0; f < num_filters; ++f) {
+			for (int h = 0; h < out_h; ++h) {
+				free(out3d[f][h]);
+			}
+			free(out3d[f]);
+		}
+		free(out3d);
+		return NULL;
+	}
+
+	int idx = 0;
+	for (int f = 0; f < num_filters; ++f) {
+		for (int h = 0; h < out_h; ++h) {
+			for (int w = 0; w < out_w; ++w) {
+				flat_out[idx++] = out3d[f][h][w];
+			}
+		}
+	}
+
+	// free the 3D structure now that we've flattened it
+	for (int f = 0; f < num_filters; ++f) {
+		for (int h = 0; h < out_h; ++h) {
+			free(out3d[f][h]);
+		}
+		free(out3d[f]);
+	}
+	free(out3d);
+
+	layer->output = flat_out;
+	// set output_size so downstream layers (activation, pool, fc) know the shape
+	layer->output_size = flat_size;
+	return flat_out;
 }
 
 // adapt 3d conv backward pass to generic layer backward interface
 static double* Conv_backward_wrapper(Layer *layer, double *output_error, double learning_rate) {
-	double ***err3d = (double***)output_error;
+	int num_filters = layer->num_filters;
+	int input_height = layer->input_height > 0 ? layer->input_height : 28;
+	int input_width = layer->input_width > 0 ? layer->input_width : 28;
+	int out_height = (input_height + 2 * layer->padding - layer->filter_rows)/layer->stride + 1;
+	int out_width = (input_width + 2 * layer->padding - layer->filter_cols)/layer->stride + 1;
+
+	double ***err3d = malloc(num_filters * sizeof(double**));
+	if (!err3d) {
+		return NULL;
+	}
+	
+	for (int f = 0; f < num_filters; ++f) {
+		err3d[f] = malloc(out_height * sizeof(double*));
+		if (!err3d[f]) {
+			return NULL;
+		}
+		for (int h = 0; h < out_height; ++h) {
+			err3d[f][h] = malloc(out_width * sizeof(double));
+			if (!err3d[f][h]) {
+				return NULL;
+			}
+			// Copy from flat error buffer
+			for (int w = 0; w < out_width; ++w) {
+				int flat_idx = f * out_height * out_width + h * out_width + w;
+				err3d[f][h][w] = output_error[flat_idx];
+			}
+		}
+	}
+	
+	// NOTE: Conv_backprop will free err3d internally, so we don't free it here
 	double ***inerr3d = Conv_backprop(layer, err3d, learning_rate);
+	
 	return (double*)inerr3d;
 }
 
@@ -1753,7 +1862,8 @@ static void fit_cnn(Network *net, int num_samples, int height, int width, int ch
 			}
 			for (size_t k = 0; k < img_stride; ++k){
 				norm_buf[k] = sample_ptr[k] / 255.0;
-			} 
+			}
+
 			double ***img_3d = flat_to_3d(norm_buf, channels, height, width);
 			if (!img_3d) { 
 				free(norm_buf); 
@@ -1762,9 +1872,50 @@ static void fit_cnn(Network *net, int num_samples, int height, int width, int ch
 
 			Layer *curr = net->head;
 			double *output = (double*)img_3d;
+			int layer_idx = 0;
+			int curr_ch = channels;
+			int curr_h = height;
+			int curr_w = width;
 			while (curr) {
+				if (curr->type == 2) {
+					curr->input_height = curr_h;
+					curr->input_width = curr_w;
+					curr->channels = curr_ch;
+				}
+				if (curr->type == 4) {
+					curr->input_height = curr_h;
+					curr->input_width = curr_w;
+					curr->channels = curr_ch;
+				}
 				double *new_output = curr->forward_prop(curr, output);
+				if (!new_output) {
+					printf("ERROR: Layer %d forward_prop returned NULL\n", layer_idx);
+				}
 				output = new_output;
+				if (curr->type == 2) {
+					int out_h = (curr_h + 2 * curr->padding - curr->filter_rows) / curr->stride + 1;
+					int out_w = (curr_w + 2 * curr->padding - curr->filter_cols) / curr->stride + 1;
+					curr_ch = curr->num_filters;
+					curr_h = out_h;
+					curr_w = out_w;
+				} 
+				else if (curr->type == 4) {
+					int out_h = (curr_h - curr->filter_rows) / curr->stride + 1;
+					int out_w = (curr_w - curr->filter_cols) / curr->stride + 1;
+					curr_h = out_h;
+					curr_w = out_w;
+				} 
+				else if (curr->type == 0) {
+					curr_ch = 1;
+					curr_h = 1;
+					curr_w = curr->output_size;
+				} 
+				else if (curr->type == 3) {
+					curr_ch = curr->num_filters;
+					curr_h = curr->filter_rows;
+					curr_w = curr->filter_cols;
+				}
+				layer_idx++;
 				curr = curr->next;
 			}
 
@@ -1780,15 +1931,18 @@ static void fit_cnn(Network *net, int num_samples, int height, int width, int ch
 
 			curr = net->tail;
 			double *output_error = grad;
+			layer_idx = net->num_layers - 1;
 			while (curr) {
 				double *new_error = curr->backward_prop(curr, output_error, learning_rate);
 				if (!new_error) {
+					printf("ERROR: Layer %d backward_prop returned NULL\n", layer_idx);
 					free(output_error);
 					free_3d(img_3d, channels, height);
 					free(norm_buf);
 					return;
 				}
 				output_error = new_error;
+				layer_idx--;
 				curr = curr->prev;
 			}
 
@@ -1812,6 +1966,159 @@ static void fit_cnn(Network *net, int num_samples, int height, int width, int ch
 
 		printf(" Loss: %.4f\n", total_loss / num_samples);
 	}
+}
+
+double *forward_sample(Network *net, double *input_flat, int channels, int height, int width) {
+	if (!net || !net->head || !net->tail || !input_flat) {
+		return NULL;
+	}
+
+	int created_3d = 0;
+	double ***img_3d = NULL;
+	Layer *curr = net->head;
+	double *output = NULL;
+	int curr_ch = channels;
+	int curr_h = height;
+	int curr_w = width;
+
+	if (curr->type == 0) {
+		output = input_flat;
+		curr_ch = 1;
+		curr_h = 1;
+		curr_w = curr->input_size;
+	} 
+	else {
+		img_3d = flat_to_3d(input_flat, channels, height, width);
+		if (!img_3d) {
+			return NULL;
+		}
+		created_3d = 1;
+		output = (double*)img_3d;
+	}
+
+	while (curr) {
+		if (curr->type == 2) {
+			curr->input_height = curr_h;
+			curr->input_width = curr_w;
+			curr->channels = curr_ch;
+		}
+		if (curr->type == 4) {
+			curr->input_height = curr_h;
+			curr->input_width = curr_w;
+			curr->channels = curr_ch;
+		}
+
+		double *new_output = curr->forward_prop(curr, output);
+		if (!new_output) {
+			for (Layer *l = net->head; l; l = l->next) {
+				if (l->output) {
+					free(l->output);
+					l->output = NULL;
+				}
+				l->input = NULL;
+			}
+			if (created_3d) {
+				free_3d(img_3d, channels, height);
+			}
+			return NULL;
+		}
+		output = new_output;
+
+		if (curr->type == 2) {
+			int out_h = (curr_h + 2 * curr->padding - curr->filter_rows) / curr->stride + 1;
+			int out_w = (curr_w + 2 * curr->padding - curr->filter_cols) / curr->stride + 1;
+			curr_ch = curr->num_filters;
+			curr_h = out_h;
+			curr_w = out_w;
+		} 
+		else if (curr->type == 4) {
+			int out_h = (curr_h - curr->filter_rows) / curr->stride + 1;
+			int out_w = (curr_w - curr->filter_cols) / curr->stride + 1;
+			curr_h = out_h;
+			curr_w = out_w;
+		} 
+		else if (curr->type == 0) {
+			curr_ch = 1;
+			curr_h = 1;
+			curr_w = curr->output_size;
+		} 
+		else if (curr->type == 3) {
+			curr_ch = curr->num_filters;
+			curr_h = curr->filter_rows;
+			curr_w = curr->filter_cols;
+		}
+
+		curr = curr->next;
+	}
+
+	double *result = malloc(net->tail->output_size * sizeof(double));
+	if (!result) {
+		for (Layer *l = net->head; l; l = l->next) {
+			if (l->output) {
+				free(l->output);
+				l->output = NULL;
+			}
+			l->input = NULL;
+		}
+		if (created_3d){
+			free_3d(img_3d, channels, height);
+		} 
+		return NULL;
+	}
+	for (int i = 0; i < net->tail->output_size; ++i){
+		result[i] = output[i];
+	}
+
+	Layer *l = net->head;
+	while (l) {
+		if (l->output) {
+			free(l->output);
+			l->output = NULL;
+		}
+		l->input = NULL;
+		l = l->next;
+	}
+
+	if (created_3d){
+		free_3d(img_3d, channels, height);
+	} 
+	return result;
+}
+
+double evaluate(Network *net, int num_samples, double *x_flat, double *y_flat, int channels, int height, int width, int num_classes) {
+	if (!net || !x_flat || !y_flat || num_samples <= 0){
+		return 0.0;
+	}
+	int correct = 0;
+	size_t img_stride = (size_t)channels * height * width;
+	size_t label_stride = (size_t)num_classes;
+	for (int i = 0; i < num_samples; ++i) {
+		double *sample_ptr = x_flat + (size_t)i * img_stride;
+		double *out = forward_sample(net, sample_ptr, channels, height, width);
+		if (!out) {
+			continue;
+		} 
+		int pred = 0;
+		double best = out[0];
+		for (int k = 1; k < num_classes; ++k) {
+			if (out[k] > best) { 
+				best = out[k]; 
+				pred = k;
+			} 
+		}
+		int true_label = 0;
+		for (int k = 0; k < num_classes; ++k) {
+			if (y_flat[i * label_stride + k] > 0.5) { 
+				true_label = k; 
+				break; 
+			}
+		}
+		if (pred == true_label) {
+			correct++;
+		}
+		free(out);
+	}
+	return (double) correct / (double) num_samples;
 }
 
 // main entry point for mnist training and testing
@@ -1845,46 +2152,77 @@ int main(void) {
 	
 	Network *cnn = initNetwork(cross_entropy_loss, cross_entropy_prime);
 	setThreadPoolSize(cnn, 4);
+
+	printf("Building proper CNN with Conv+ReLU+Flatten+FC (no maxpool for now)...\n");
 	
-	// Create CNN layers
-	Layer *conv1 = initConv2D(8, 3, 3, 1, 1, 0);  // 8 filters, 3x3 kernel, 1 channel, stride 1, no padding
+	Layer *conv1 = initConv2D(8, 3, 3, 1, 1, 0);
 	if (!conv1) {
 		printf("ERROR: Failed to allocate Conv2D layer\n");
 		return 1;
 	}
-	
-	Layer *flatten = initFlatten(8, 26, 26);
-	if (!flatten) {
-		printf("ERROR: Failed to allocate Flatten layer\n");
-		return 1;
-	}
-	
-	Layer *fc1 = initFC(8 * 26 * 26, 128); 
-	if (!fc1) {
-		printf("ERROR: Failed to allocate FC layer\n");
-		return 1;
-	}
-	
-	Layer *act1 = initActivation(relu_activation, relu_p, 128);
+	printf("  Conv1: 1 channel, 8 filters 3x3 → output 8x26x26\n");
+
+	Layer *act1 = initActivation(relu_activation, relu_p, 8 * 26 * 26);
 	if (!act1) {
-		printf("ERROR: Failed to allocate Activation layer\n");
+		printf("ERROR: Failed to allocate ReLU1\n");
 		return 1;
 	}
-	
+	printf("  ReLU1: 8x26x26\n");
+
+	// add a max-pooling layer after activation to reduce spatial dimensions
+	Layer *pool1 = initMaxPool(8, 26, 26, 2, 2, 2); // channels=8, in=26x26, pool=2x2 stride=2
+	if (!pool1) {
+		printf("ERROR: Failed to allocate MaxPool\n");
+		return 1;
+	}
+	printf("  MaxPool1: 8x26x26 -> 8x13x13\n");
+
+	// FC input is pooled feature map flattened: 8 * 13 * 13 = 1352
+	Layer *fc1 = initFC(8 * 13 * 13, 128);
+	if (!fc1) {
+		printf("ERROR: Failed to allocate FC1\n");
+		return 1;
+	}
+	printf("  FC1: 1352 → 128\n");
+
+	Layer *act_fc1 = initActivation(relu_activation, relu_p, 128);
+	if (!act_fc1) {
+		printf("ERROR: Failed to allocate ReLU2\n");
+		return 1;
+	}
+	printf("  ReLU2: 128\n");
+
 	Layer *fc2 = initFC(128, 10);
 	if (!fc2) {
-		printf("ERROR: Failed to allocate output FC layer\n");
+		printf("ERROR: Failed to allocate FC2\n");
 		return 1;
 	}
-	
+	printf("  FC2: 128 → 10\n");
+
 	addLayer(cnn, conv1);
-	addLayer(cnn, flatten);
-	addLayer(cnn, fc1);
 	addLayer(cnn, act1);
+	addLayer(cnn, pool1);
+	addLayer(cnn, fc1);
+	addLayer(cnn, act_fc1);
 	addLayer(cnn, fc2);
+	printf("CNN architecture ready.\n");
 	
-	printf("Preparing training data (labels only)...\n");
-	// Well convert images to 3d using flat_to_3d
+	printf("Preparing training data (flat format)...\n");
+	
+	double *x_train_flat = malloc(num_train * 28 * 28 * sizeof(double));
+	if (!x_train_flat) {
+		printf("ERROR: Failed to allocate flat training images\n");
+		return 1;
+	}
+	for (int i = 0; i < num_train; ++i) {
+		for (int r = 0; r < 28; ++r) {
+			for (int c = 0; c < 28; ++c) {
+				x_train_flat[i * 28 * 28 + r * 28 + c] = train_images[i][r][c];
+			}
+		}
+	}
+	printf("Flattened %d training images\n", num_train);
+	
 	double (*y_train)[10] = malloc(num_train * sizeof(*y_train));
 	if (!y_train) {
 		printf("ERROR: Failed to allocate training labels\n");
@@ -1901,17 +2239,54 @@ int main(void) {
 	}
 	
 	printf("Training CNN with 4 threads for 3 epochs...\n");
-	int epochs = 3;
+	int epochs = 15;
 	double lr = 0.01;
-	fit_cnn(cnn, num_train, 28, 28, 1, (double*)train_images, (double*)y_train, 10, epochs, lr);
+	fit_cnn(cnn, num_train, 28, 28, 1, x_train_flat, (double*)y_train, 10, epochs, lr);
 	printf("CNN training completed successfully!\n");
-    
-	// Cleanup
+
+	free(x_train_flat);
+
+	printf("\nEvaluating CNN on test set...\n");
+	int num_test_eval_cnn = 1000;
+	if (num_test_eval_cnn > number_of_images) {
+		num_test_eval_cnn = number_of_images;
+	}
+
+	double *x_test_flat = malloc((size_t)num_test_eval_cnn * 28 * 28 * sizeof(double));
+	if (!x_test_flat) {
+		free(y_train);
+		destroyNetwork(cnn);
+		return 1;
+	}
+	double (*y_test)[10] = malloc(num_test_eval_cnn * sizeof(*y_test));
+	if (!y_test) {
+		free(x_test_flat);
+		free(y_train);
+		destroyNetwork(cnn);
+		return 1;
+	}
+	for (int i = 0; i < num_test_eval_cnn; ++i) {
+		for (int r = 0; r < 28; ++r) {
+			for (int c = 0; c < 28; ++c) {
+				x_test_flat[i * 28 * 28 + r * 28 + c] = testImages[i][r][c] / 255.0;
+			}
+		}
+		for (int k = 0; k < 10; ++k) y_test[i][k] = 0.0;
+		int lbl = (int)test_labels[i];
+		if (lbl >= 0 && lbl < 10) y_test[i][lbl] = 1.0;
+	}
+
+	double acc = evaluate(cnn, num_test_eval_cnn, x_test_flat, (double*)y_test, 1, 28, 28, 10);
+	printf("CNN test accuracy on %d samples: %.2f%%\n", num_test_eval_cnn, 100.0 * acc);
+
+	free(x_test_flat);
+	free(y_test);
+
 	free(y_train);
 	destroyNetwork(cnn);
 	
 	// Test 2: Quick FC baseline
-	printf("\n=== Testing FC baseline for comparison ===\n");
+	printf("=== Testing FC baseline for comparison ===\n");
 	
 	double (*x_train)[IMAGE_SIZE] = malloc(num_train * sizeof(*x_train));
 	double (*y_train_fc)[10] = malloc(num_train * sizeof(*y_train_fc));
@@ -1940,62 +2315,70 @@ int main(void) {
 
 	Network *net = initNetwork(cross_entropy_loss, cross_entropy_prime);
 	setThreadPoolSize(net, 4);
-	Layer *fc1_baseline = initFC(IMAGE_SIZE, 128);
-	Layer *act1_baseline = initActivation(relu_activation, relu_p, 128);
-	Layer *fc2_baseline = initFC(128, 10);
+	Layer *fc1_baseline = initFC(IMAGE_SIZE, 64);
+	Layer *act1_baseline = initActivation(relu_activation, relu_p, 64);
+	Layer *fc2_baseline = initFC(64, 64);
+	Layer *act2_baseline = initActivation(relu_activation, relu_p, 64);
+	Layer *fc3_baseline = initFC(64, 10);
 	addLayer(net, fc1_baseline);
 	addLayer(net, act1_baseline);
 	addLayer(net, fc2_baseline);
-	printf("Training FC network with 4 threads and CROSS-ENTROPY loss\n");
-	epochs = 10;
-	lr = 0.01;
+	addLayer(net, act2_baseline);
+	addLayer(net, fc3_baseline);
+	printf("Training FC network with 4 threads and MSE loss\n");
+	epochs = 30;
+	lr = 0.005;
 	fit(net, num_train, IMAGE_SIZE, 10, x_train, y_train_fc, epochs, lr);
 	int num_test_eval = 1000;
 	if (num_test_eval > number_of_images) {
 		num_test_eval = number_of_images;
 	}
-	double **pred = malloc(num_test_eval * sizeof(double*));
-	for (int i = 0; i < num_test_eval; ++i) {
-		pred[i] = malloc(10 * sizeof(double));
-		
-		double *test_flat = malloc(IMAGE_SIZE * sizeof(double));
-		for (int r = 0; r < 28; ++r){
-			for (int c = 0; c < 28; ++c) {
-				test_flat[r * 28 + c] = testImages[i][r][c] / 255.0;
-			}
-		}
-		Layer *curr = net->head;
-		double *output = test_flat;
-		while (curr) {
-			output = curr->forward_prop(curr, output);
-			curr = curr->next;
-		}
-		
-		for (int k = 0; k < 10; ++k) {
-			pred[i][k] = output[k];
-		}
-		
-		free(test_flat);
-	}
-	int correct = 0;
-	for (int i = 0; i < num_test_eval; ++i) {
-		int pred_label = 0;
-		double best = pred[i][0];
-		for (int k = 1; k < 10; ++k) {
-			if (pred[i][k] > best) {
-				best = pred[i][k];
-				pred_label = k;
-			}
-		}
-		if (pred_label == (int)test_labels[i])
-			++correct;
-	}
-	printf("Test accuracy on %d samples: %.2f%%\n", num_test_eval, 100.0 * correct / num_test_eval);
 
-	for (int i = 0; i < num_test_eval; ++i) {
-		free(pred[i]);
+	/* Build flat test arrays and use evaluate() abstraction */
+	double *x_test_flat_fc = malloc((size_t)num_test_eval * IMAGE_SIZE * sizeof(double));
+	if (!x_test_flat_fc) {
+		free(x_train);
+		free(y_train_fc);
+		free(testImages);
+		free(train_images);
+		free(test_labels);
+		free(train_labels);
+		destroyNetwork(net);
+		return 1;
 	}
-	free(pred);
+	double *y_test_flat_fc = malloc((size_t)num_test_eval * 10 * sizeof(double));
+	if (!y_test_flat_fc) {
+		free(x_test_flat_fc);
+		free(x_train);
+		free(y_train_fc);
+		free(testImages);
+		free(train_images);
+		free(test_labels);
+		free(train_labels);
+		destroyNetwork(net);
+		return 1;
+	}
+	for (int i = 0; i < num_test_eval; ++i) {
+		for (int r = 0; r < 28; ++r) {
+			for (int c = 0; c < 28; ++c) {
+				x_test_flat_fc[i * IMAGE_SIZE + r * 28 + c] = testImages[i][r][c] / 255.0;
+			}
+		}
+		for (int k = 0; k < 10; ++k) {
+			y_test_flat_fc[i * 10 + k] = 0.0;
+		} 
+		int lbl = (int)test_labels[i];
+		if (lbl >= 0 && lbl < 10) {
+			y_test_flat_fc[i * 10 + lbl] = 1.0;
+		} 
+	}
+
+	double acc_fc = evaluate(net, num_test_eval, x_test_flat_fc, y_test_flat_fc, 1, 1, IMAGE_SIZE, 10);
+	printf("FC baseline test accuracy on %d samples: %.2f%%\n", num_test_eval, 100.0 * acc_fc);
+
+	free(x_test_flat_fc);
+	free(y_test_flat_fc);
+
 	free(x_train);
 	free(y_train_fc);
 	free(testImages);
