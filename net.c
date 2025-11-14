@@ -683,52 +683,52 @@ void setThreadPoolSize(Network* net, int num_threads) {
 	g_pool = net->thread_pool;
 }
 
-// forward propagate samples through network and return predictions
-double** predict(Network *net, int num_samples, int sample_size, double input_data[num_samples][sample_size]) {
-	if (!net || !net->head || !net->tail) {
-		return NULL;
-	}
+// forward propagate: Deprecated, use forward_sample() instead 
+// double** predict(Network *net, int num_samples, int sample_size, double input_data[num_samples][sample_size]) {
+// 	if (!net || !net->head || !net->tail) {
+// 		return NULL;
+// 	}
 
-	double **result = malloc(num_samples * sizeof(double*));
-	for (int i = 0; i < num_samples; ++i) {
-		result[i] = malloc(net->tail->output_size * sizeof(double));
-	}
+// 	double **result = malloc(num_samples * sizeof(double*));
+// 	for (int i = 0; i < num_samples; ++i) {
+// 		result[i] = malloc(net->tail->output_size * sizeof(double));
+// 	}
 
-	for (int i = 0; i < num_samples; ++i) {
-		int in_size = net->head->input_size;
-		double *input = malloc(in_size * sizeof(double));
-		for (int j = 0; j < in_size; ++j) {
-			input[j] = input_data[i][j];
-		}
+// 	for (int i = 0; i < num_samples; ++i) {
+// 		int in_size = net->head->input_size;
+// 		double *input = malloc(in_size * sizeof(double));
+// 		for (int j = 0; j < in_size; ++j) {
+// 			input[j] = input_data[i][j];
+// 		}
 
-		Layer *curr = net->head;
-		double *output = NULL;
-		while (curr) {
-			output = curr->forward_prop(curr, input);
-			input = output;
-			curr = curr->next;
-		}
+// 		Layer *curr = net->head;
+// 		double *output = NULL;
+// 		while (curr) {
+// 			output = curr->forward_prop(curr, input);
+// 			input = output;
+// 			curr = curr->next;
+// 		}
 
-		for (int m = 0; m < net->tail->output_size; ++m) {
-			result[i][m] = output[m];
-		}
+// 		for (int m = 0; m < net->tail->output_size; ++m) {
+// 			result[i][m] = output[m];
+// 		}
 
-		curr = net->head;
-		while (curr) {
-			if (curr->input) {
-				free(curr->input);
-				curr->input = NULL;
-			}
-			if (curr->next == NULL && curr->output) {
-				free(curr->output);
-				curr->output = NULL;
-			}
-			curr = curr->next;
-		}
-	}
+// 		curr = net->head;
+// 		while (curr) {
+// 			if (curr->input) {
+// 				free(curr->input);
+// 				curr->input = NULL;
+// 			}
+// 			if (curr->next == NULL && curr->output) {
+// 				free(curr->output);
+// 				curr->output = NULL;
+// 			}
+// 			curr = curr->next;
+// 		}
+// 	}
 
-	return result;
-}
+// 	return result;
+// }
 
 // train fully connected network on 2d array data
 void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, double x_train[num_samples][sample_size], double y_train[num_samples][sizeOfOutput], int epochs, double learning_rate) {
