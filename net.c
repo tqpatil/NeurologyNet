@@ -1968,7 +1968,7 @@ static void fit_cnn(Network *net, int num_samples, int height, int width, int ch
 	}
 }
 
-double *forward_sample(Network *net, double *input_flat, int channels, int height, int width) {
+double *infer_sample(Network *net, double *input_flat, int channels, int height, int width) {
 	if (!net || !net->head || !net->tail || !input_flat) {
 		return NULL;
 	}
@@ -2094,7 +2094,7 @@ double evaluate(Network *net, int num_samples, double *x_flat, double *y_flat, i
 	size_t label_stride = (size_t)num_classes;
 	for (int i = 0; i < num_samples; ++i) {
 		double *sample_ptr = x_flat + (size_t)i * img_stride;
-		double *out = forward_sample(net, sample_ptr, channels, height, width);
+		double *out = infer_sample(net, sample_ptr, channels, height, width);
 		if (!out) {
 			continue;
 		} 

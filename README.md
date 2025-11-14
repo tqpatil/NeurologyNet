@@ -56,13 +56,14 @@ Creating an infrastructure for building neural nets fully in C.
 	2. initFC(int input_size, int output_size); //Creates fully connected layer
 	3. initActivation(activation funcA, activation_p funcB, int input_size); // Create activation layer (given activation function)
 	4. fit(Network *net, int num_samples, int sample_length, int networkOutputSize, double xtrain[][], double ytrain[][], int epochs, double learning_rate);
-	5. double **predict(Network *net, int num_samples, int sample_length, double data[][]);
+	5. infer_sample(Network *net, double *input_flat, int channels, int height, int width); // Run single-sample inference; works for both CNNs and FC networks
 	6. destroyNetwork(Network *net); // Object destroyer
 	7. initConv2D(int num_filters, int filter_rows, int filter_cols, int num_channels, int stride, int padding);
 	8. initMaxPool(int num_channels, int input_height, int input_width, int pool_rows, int pool_cols, int stride);
 	9. initFlatten(int num_filters, int height, int width);
 	10. setThreadPoolSize(Network *net, int num_threads);
 	11. fit_cnn(Network *net, int num_samples, int height, int width, int channels, double *x_train_flat, double *y_train_flat, int num_classes, int epochs, double learning_rate); // Train CNNs with flat CHW input buffers
+	12. evaluate(Network *net, int num_samples, double *x_flat, double *y_flat, int channels, int height, int width, int num_classes); // Evaluate network on test set and return accuracy
  
 ### To Do:
   	1. Adam Optimizer

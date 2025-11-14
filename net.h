@@ -59,10 +59,9 @@ struct Network {
 Network* initNetwork(loss Loss, loss_prime Loss_prime);
 void setThreadPoolSize(Network* net, int num_threads);
 void addLayer(Network* net, Layer* layer);
-double** predict(Network *net, int num_samples, int sample_size, double input_data[num_samples][sample_size]);
 void fit(Network *net, int num_samples, int sample_size, int sizeOfOutput, double x_train[num_samples][sample_size], double y_train[num_samples][sizeOfOutput], int epochs, double learning_rate);
 void enableVisualizer(Network* net, int flag);
-double *forward_sample(Network *net, double *input_flat, int channels, int height, int width);
+double *infer_sample(Network *net, double *input_flat, int channels, int height, int width);
 double evaluate(Network *net, int num_samples, double *x_flat, double *y_flat, int channels, int height, int width, int num_classes);
 struct Layer {
     double **weights;
